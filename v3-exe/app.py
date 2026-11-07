@@ -40,6 +40,7 @@ UI_STATE_FILE = os.path.join(os.environ.get('APPDATA', ''), 'WinCtlPanel2', 'ui.
 BALL_FUNCS = [('panel', '显示/隐藏面板'), ('theme', '深浅色切换'), ('bright_up', '亮度 +5'),
               ('bright_down', '亮度 -5'), ('restore', '一键还原'), ('wallpaper', '更换壁纸'),
               ('wallpaper_restore', '仅还原壁纸'), ('explorer', '重启资源管理器'), ('exit', '退出程序')]
+BALL_FUNC_LABELS = dict(BALL_FUNCS)
 BALL_DEFAULT = ['panel', 'theme', 'bright_up', 'bright_down', 'restore']
 BALL_CONFIG_FILE = os.path.join(os.environ.get('APPDATA', ''), 'WinCtlPanel2', 'ball.json')
 BALL = {'enabled': True, 'functions': list(BALL_DEFAULT), 'x': None, 'y': None, 'tucked': True}
@@ -259,7 +260,8 @@ def build_state():
     return {'ok': True, 'monitors': monitor_state(), 'dark': dark, 'accent': accent,
             'taskbar': taskbar, 'wallpaper': winapi.get_wallpaper(), 'backup': BACKUP.exists(),
             'topmost': STATE['topmost'], 'rotation': STATE['rotation'], 'rotateFolder': STATE['folder'],
-            'hotkeys': dict(STATE['hotkeys']), 'offline': True}
+            'hotkeys': dict(STATE['hotkeys']), 'offline': True,
+            'ball': {'enabled': BALL['enabled'], 'functions': list(BALL['functions'])}}
 
 
 # ---------------------------------------------------------------- shared operations (handlers + hotkeys)
@@ -316,6 +318,22 @@ def do_wallpaper_restore():
     if not winapi.set_wallpaper(str(values['wallpaper'])):
         raise ApiError('系统拒绝恢复原壁纸，请确认原图片仍然存在。')
     winapi.broadcast_settings(None)
+
+
+def ball_config_payload():
+    """悬浮球设置的完整 payload（GET 响应 / POST 保存后的回执）。"""
+    return {'ok': True, 'enabled': BALL['enabled'], 'functions': list(BALL['functions']),
+            'available': [{'id': fid, 'label': label} for fid, label in BALL_FUNCS]}
+
+
+def apply_ball_enabled():
+    """按 BALL['enabled'] 显示/隐藏悬浮球；GUI 不在场（--no-window）时静默跳过。"""
+    if GUI_HOST is None:
+        return
+    if BALL['enabled']:
+        GUI_HOST.ensure_ball()
+    elif GUI_HOST.ball is not None:
+        GUI_HOST.ball.hide()
 
 
 def ball_action(fid):
@@ -524,6 +542,29 @@ def handle_api(op, method, body):
         if failed:
             raise ApiError('部分项目未能还原，备份已保留：' + '；'.join(failed))
         return build_state(), 200, None
+
+    if op == 'ball/config':
+        if method == 'GET':
+            return ball_config_payload(), 200, None
+        if method != 'POST':
+            raise ApiError('不支持的请求方式。')
+        if 'enabled' in body:
+            BALL['enabled'] = bool(body.get('enabled'))
+        if 'functions' in body:
+            funcs = body.get('functions')
+            if not isinstance(funcs, list):
+                raise ApiError('功能列表格式不正确。')
+            known = {fid for fid, _label in BALL_FUNCS}
+            ordered = []
+            for fid in funcs:
+                if not isinstance(fid, str) or fid not in known:
+                    raise ApiError('功能列表包含未知项：%s' % fid)
+                if fid not in ordered:
+                    ordered.append(fid)
+            BALL['functions'] = ordered
+        save_ball_config()
+        apply_ball_enabled()
+        return ball_config_payload(), 200, None
 
     if op == 'window/topmost':
         if method != 'POST':
@@ -930,12 +971,12 @@ class GuiHost:
     def _ball_menu(self, hwnd):
         menu = winapi.user32.CreatePopupMenu()
         ids = {}
-        for i, (fid, label) in enumerate(BALL_FUNCS):
-            if fid in BALL['functions']:
-                winapi.user32.AppendMenuW(menu, 0, 100 + i, label)
-                ids[100 + i] = fid
+        for offset, fid in enumerate(BALL['functions']):  # 按设置页/配置的顺序弹出
+            label = BALL_FUNC_LABELS.get(fid, fid)
+            winapi.user32.AppendMenuW(menu, 0, 100 + offset, label)
+            ids[100 + offset] = fid
         if not ids:
-            winapi.user32.AppendMenuW(menu, 0, 0, '（未勾选功能：托盘右键 → 悬浮球）')
+            winapi.user32.AppendMenuW(menu, 0, 0, '（未选择功能：主面板 → 更多工具 → 悬浮球设置）')
         winapi.user32.SetForegroundWindow(hwnd)
         pt = wintypes.POINT()
         winapi.user32.GetCursorPos(ctypes.byref(pt))
@@ -960,10 +1001,7 @@ class GuiHost:
         if cmd == 10:
             BALL['enabled'] = not BALL['enabled']
             save_ball_config()
-            if BALL['enabled']:
-                self.ensure_ball()
-            elif self.ball is not None:
-                self.ball.hide()
+            apply_ball_enabled()
         elif 20 <= cmd < 20 + len(BALL_FUNCS):
             fid = BALL_FUNCS[cmd - 20][0]
             if fid in BALL['functions']:

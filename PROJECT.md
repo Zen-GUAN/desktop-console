@@ -38,11 +38,11 @@ Windows 11 未激活，「设置 → 个性化」整类被锁 → 把 6 项功�
 
 ## 下一步
 
-1. **UI 层复验**：开一次 v3（或 v2）面板，确认亮度滑杆可拖、数值正常；确认后把 AGENT_HANDOFF §一 表格的「UI 待复验」注记去掉。
-2. **上传 GitHub**：仓库已初始化（main 分支，2026-11-07 初始提交），用户自行建远程仓库后 `git remote add origin <url> && git push -u origin main`；exe 产物不入库（.gitignore），发布用 GitHub Release 传 `v3-exe\dist\桌面控制台.exe`；LICENSE 待用户定。
-3. 可选：开机自启（Startup + VBS 方案，参考 `yuancheng` 项目）；代码签名。
-4. 前端迭代（Kimi）→ 改 `v2-web\ui\` → 重跑 `v3-exe\build.py` 重新打包（exe 内的 UI 是构建时从 v2-web 打进去的）。
-5. exe 打包清单的完成状态（图标/版本信息/单实例/asInvoker 等）见 `AGENT_HANDOFF.md` §5.6。
+1. **Kimi 执行悬浮球设置页**：任务书已出（`docs\任务书_悬浮球设置页.md`，2026-11-07）——可视化勾选+排序；后端契约（`GET/POST /api/ball/config` + `state.ball` 能力检测）已实现并实测。Kimi 交稿后由 ZCode 重打包验收。
+2. **UI 层复验**：开一次 v3（或 v2）面板，确认亮度滑杆可拖、数值正常；确认后把 AGENT_HANDOFF §一 表格的「UI 待复验」注记去掉。
+3. **上传 GitHub**：仓库已初始化（main 分支），用户建远程后 `git remote add origin <url> && git push -u origin main`；exe 用 GitHub Release 发；LICENSE 待用户定。
+4. 可选：开机自启（Startup + VBS 方案，参考 `yuancheng` 项目）；代码签名。
+5. exe 打包清单的完成状态见 `AGENT_HANDOFF.md` §5.6。
 
 ## 文件地图
 
