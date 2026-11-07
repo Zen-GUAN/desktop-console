@@ -177,8 +177,37 @@ def find_main_hwnd(title):
     return candidates[0] if candidates else 0
 
 def begin_title_drag(hwnd):
-    user32.ReleaseCapture()
-    user32.SendMessageW(hwnd, 0xA1, 2, 0)   # WM_NCLBUTTONDOWN, HTCAPTION
+    """无边框窗口拖动：异步轮询光标 + 左键状态移动窗口（合成 HTCAPTION 消息在 WebView2
+    持有 capture 时收不到鼠标移动，与缩放同理）。"""
+    def worker():
+        try:
+            rect = wintypes.RECT()
+            if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return
+            start = wintypes.POINT()
+            user32.GetCursorPos(ctypes.byref(start))
+            base_x, base_y = rect.left, rect.top
+            deadline = time.time() + 15
+            while time.time() < deadline:
+                time.sleep(0.016)
+                if not user32.GetAsyncKeyState(0x01) & 0x8000:  # VK_LBUTTON 松开 → 结束
+                    break
+                pt = wintypes.POINT()
+                user32.GetCursorPos(ctypes.byref(pt))
+                user32.SetWindowPos(hwnd, None,
+                                    int(base_x + (pt.x - start.x)), int(base_y + (pt.y - start.y)),
+                                    0, 0, 0x0001 | 0x0004 | 0x0010)  # NOSIZE|NOZORDER|NOACTIVATE
+        except Exception:
+            pass
+    threading.Thread(target=worker, name='winctl-drag', daemon=True).start()
+
+
+def apply_window_round(hwnd, radius=14):
+    """主窗口圆角区域（无边框窗口无系统圆角，与 CSS 12px 圆角对齐）。"""
+    r = wintypes.RECT()
+    if hwnd and user32.GetWindowRect(hwnd, ctypes.byref(r)):
+        rgn = gdi32.CreateRoundRectRgn(0, 0, r.right - r.left + 1, r.bottom - r.top + 1, radius, radius)
+        user32.SetWindowRgn(hwnd, rgn, True)
 
 def begin_resize(hwnd):
     """右下角缩放：异步轮询光标 + 左键状态，自己改窗口尺寸。

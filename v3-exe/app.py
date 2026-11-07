@@ -1004,9 +1004,15 @@ class GuiHost:
             ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
             ctypes.windll.user32.SetForegroundWindow(hwnd)
 
+    def _apply_round(self):
+        hwnd = winapi.find_main_hwnd(APP_TITLE)
+        if hwnd:
+            winapi.apply_window_round(hwnd)
+
     def _on_resized(self, width, height):
         self._geo.update(width=int(width), height=int(height))
         schedule_ui_save(width=int(width), height=int(height))
+        self._apply_round()  # 无边框窗口圆角区域随尺寸重打
 
     def _on_moved(self, x, y):
         self._geo.update(x=int(x), y=int(y))
@@ -1030,7 +1036,8 @@ class GuiHost:
         self.window = webview.create_window(
             APP_TITLE, 'http://127.0.0.1:%d/' % port,
             width=self._geo['width'], height=self._geo['height'],
-            x=self._geo['x'], y=self._geo['y'], min_size=(340, 480))
+            x=self._geo['x'], y=self._geo['y'], min_size=(340, 480),
+            frameless=True, easy_drag=False, shadow=True)
         try:
             self.window.events.resized += self._on_resized
             self.window.events.moved += self._on_moved
@@ -1054,6 +1061,16 @@ class GuiHost:
         load_ball_config()
         if BALL['enabled']:
             self.ensure_ball()
+
+        def round_when_ready():
+            # 无边框窗口就绪后打一次圆角区域；后续 resize/move 事件会重打
+            for _ in range(150):
+                hwnd = winapi.find_main_hwnd(APP_TITLE)
+                if hwnd:
+                    winapi.apply_window_round(hwnd)
+                    return
+                time.sleep(0.1)
+        threading.Thread(target=round_when_ready, name='winctl-round', daemon=True).start()
 
         def watchdog():
             EXIT_EVENT.wait()
