@@ -1156,6 +1156,18 @@ class GuiHost:
 
 # ---------------------------------------------------------------- main
 
+def _global_log(context):
+    """所有线程的未捕获异常落盘（windowed exe 的 stderr 不可见）。"""
+    try:
+        import traceback
+        log = os.path.join(os.environ.get('TEMP', ''), 'WinCtlPanel3-stderr.log')
+        with open(log, 'a', encoding='utf-8') as f:
+            f.write('=== %s %s ===\n' % (time.strftime('%Y-%m-%d %H:%M:%S'), context))
+            traceback.print_exc(file=f)
+    except Exception:
+        pass
+
+
 def main():
     global SERVER_TOKEN, SERVER_PORT, BACKUP, GUI_HOST
     if hasattr(sys.stdout, 'reconfigure'):
@@ -1173,6 +1185,18 @@ def main():
 
     if args.selftest:
         return run_selftest()
+
+    # windowed exe：stdout/stderr 重定向到文件，pywebview/pythonnet 的输出不再丢失
+    if getattr(sys, 'frozen', False):
+        try:
+            log_path = os.path.join(os.environ.get('TEMP', ''), 'WinCtlPanel3-stderr.log')
+            log_file = open(log_path, 'a', encoding='utf-8', buffering=1)
+            sys.stdout = log_file
+            sys.stderr = log_file
+        except Exception:
+            pass
+    sys.excepthook = lambda t, v, tb: _global_log('sys.excepthook')
+    threading.excepthook = lambda a: _global_log('thread %s' % getattr(a, 'thread', None))
 
     if not winapi.acquire_single_instance(MUTEX_NAME):
         import ctypes
@@ -1216,30 +1240,29 @@ def main():
         try:
             gui.run(SERVER_PORT)
         except Exception as exc:
-            # GUI 启动失败时给出可见原因，而不是无声退出
-            ctypes.windll.user32.MessageBoxW(
-                0, '窗口启动失败：%s\n\n常见原因：\n'
-                   '1) WebView2 运行时未安装（Win11 自带；Win10 可装 Edge 或 WebView2 Runtime）\n'
-                   '2) .NET Framework 低于 4.6.2（Win10 1709+ / Win11 自带）' % exc,
-                APP_TITLE, 0x10)
+            if EXIT_EVENT.is_set():
+                # 用户主动退出过程中的 teardown 异常：静默（记录备查）
+                _global_log('gui.run teardown: %s' % exc)
+            else:
+                # GUI 启动失败时给出可见原因，而不是无声退出
+                ctypes.windll.user32.MessageBoxW(
+                    0, '窗口启动失败：%s\n\n常见原因：\n'
+                       '1) WebView2 运行时未安装（Win11 自带；Win10 可装 Edge 或 WebView2 Runtime）\n'
+                       '2) .NET Framework 低于 4.6.2（Win10 1709+ / Win11 自带）' % exc,
+                    APP_TITLE, 0x10)
 
-    if gui is not None and gui.ball is not None:
+    cleanup_steps = (
+        ('ball-stop', lambda: gui.ball.stop() if gui is not None and gui.ball is not None else None),
+        ('tray-stop', lambda: gui.tray.stop() if gui is not None and gui.tray is not None else None),
+        ('server-shutdown', server.shutdown),
+        ('monitor-destroy', lambda: [winapi.destroy_monitor(h) for h, _d in monitor_list()]),
+    )
+    for step_name, fn in cleanup_steps:
         try:
-            gui.ball.stop()
+            fn()
         except Exception:
-            pass
-    if gui is not None and gui.tray is not None:
-        try:
-            gui.tray.stop()
-        except Exception:
-            pass
+            _global_log('cleanup-' + step_name)
     EXIT_EVENT.set()
-    try:
-        server.shutdown()
-    except Exception:
-        pass
-    for handle, _desc in monitor_list():
-        winapi.destroy_monitor(handle)
     return 0
 
 
