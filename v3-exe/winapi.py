@@ -181,8 +181,9 @@ def begin_title_drag(hwnd):
     user32.SendMessageW(hwnd, 0xA1, 2, 0)   # WM_NCLBUTTONDOWN, HTCAPTION
 
 def begin_resize(hwnd):
+    """右下角缩放：SC_SIZE|WMSZ_BOTTOMRIGHT 是规范入口（WM_NCLBUTTONDOWN 合成消息斜向跟踪不稳）。"""
     user32.ReleaseCapture()
-    user32.SendMessageW(hwnd, 0xA1, 17, 0)  # WM_NCLBUTTONDOWN, HTBOTTOMRIGHT
+    user32.SendMessageW(hwnd, 0x0112, 0xF008, 0)  # WM_SYSCOMMAND, SC_SIZE|WMSZ_BOTTOMRIGHT
 
 def apply_topmost(hwnd, on):
     if hwnd:
@@ -1115,7 +1116,7 @@ class BallHost:
                 except Exception:
                     _ball_log_exc('panel-paint-bg')
                 try:
-                    user32.SetBkMode(hdc, TRANSPARENT_BK)
+                    gdi32.SetBkMode(hdc, TRANSPARENT_BK)
                     if self._panel_font:
                         gdi32.SelectObject(hdc, self._panel_font)
                     for i, (fid, label) in enumerate(self._rows):

@@ -34,8 +34,8 @@ Windows 11 未激活，「设置 → 个性化」整类被锁 → 把 6 项功�
 - **编码红线**：`.ps1` UTF-8 带 BOM；`.cmd` 纯 ASCII（工作区 AGENTS.md 技术红线 1/8）。
 - 窗口关闭后 server 进程不退（bug#2，UiTimer 的 `HasExited` 检测失效）——打包成同进程后自然消失，现形态暂不修。
 - `tools\brightness.ps1` 独立可用，不受任何版本 bug 影响。
-- **球线程坐标纪律**：`WM_MOUSEMOVE` 的 lparam 是**客户区坐标**（相对球左上角），拖动定位必须用 `GetCursorPos` 屏幕坐标——混用会导致球瞬移（2026-11-07 拖动手感异常的根因）；面板文本绘制注意 `DrawTextW` 在 user32，`SetBkMode`/`SetTextColor` 在 gdi32。
-- 诊断日志：`%TEMP%\WinCtlPanel2-diag.log`（每次启动追加显示器枚举与亮度探测结果）。
+- **球线程坐标纪律**：`WM_MOUSEMOVE` 的 lparam 是**客户区坐标**（相对球左上角），拖动定位必须用 `GetCursorPos` 屏幕坐标——混用会导致球瞬移（2026-11-07 拖动手感异常的根因）；面板文本绘制注意 `DrawTextW` 在 user32，`SetBkMode`/`SetTextColor` 在 gdi32——**原型与调用点必须同侧**（这次劈叉只炸在冻结 GUI 路径，selftest 补了 panel-paint-apis + panel-paint-smoke 端到端冒烟拦住）；窗口斜向缩放用 `WM_SYSCOMMAND SC_SIZE|WMSZ_BOTTOMRIGHT`，别用合成的 WM_NCLBUTTONDOWN。
+- 诊断日志：`%TEMP%\WinCtlPanel2-diag.log`（每次启动追加显示器枚举与亮度探测结果）；球/面板异常落 `%TEMP%\WinCtlPanel3-ball.log`（用户报"没字/没反应"先看这个）。
 
 ## 开源仓库（2026-11-07 上线）
 

@@ -885,7 +885,31 @@ def run_selftest():
             winapi.destroy_monitor(handle)
         globals()['MONITORS'] = []
 
+    # 面板绘制链路冒烟：真调一遍 CreateFont→SelectObject→SetBkMode→SetTextColor→DrawTextW
+    try:
+        hdc = winapi.user32.GetDC(None)
+        font = winapi.gdi32.CreateFontW(-24, 0, 0, 0, 400, 0, 0, 0, 1, 4, 0, 5, 0, 'Microsoft YaHei UI')
+        old = winapi.gdi32.SelectObject(hdc, font)
+        winapi.gdi32.SetBkMode(hdc, 1)
+        winapi.gdi32.SetTextColor(hdc, 0xF5E7E2)
+        rect = wintypes.RECT(0, 0, 200, 40)
+        drawn = winapi.user32.DrawTextW(hdc, '测试文字', -1, ctypes.byref(rect), 0x24)
+        winapi.gdi32.SelectObject(hdc, old)
+        winapi.gdi32.DeleteObject(font)
+        winapi.user32.ReleaseDC(None, hdc)
+        check('panel-paint-smoke', bool(drawn) and drawn > 0, 'DrawTextW 返回 %d' % drawn)
+    except Exception as exc:
+        check('panel-paint-smoke', False, str(exc))
+
     # 悬浮球渲染：尺寸正确、四角透明、中心有像素、预乘合法
+    try:
+        api_ok = all(hasattr(mod, name) for mod, name in (
+            (winapi.user32, 'DrawTextW'), (winapi.gdi32, 'SetBkMode'),
+            (winapi.gdi32, 'SetTextColor'), (winapi.gdi32, 'CreateFontW'),
+            (winapi.gdi32, 'CreateSolidBrush')))
+        check('panel-paint-apis', api_ok, '面板绘制 API 归属（user32/gdi32）')
+    except Exception as exc:
+        check('panel-paint-apis', False, str(exc))
     try:
         buf = winapi.render_ball_pixels(56)
         center = buf[(28 * 56 + 28) * 4:(28 * 56 + 28) * 4 + 4]
