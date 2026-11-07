@@ -36,13 +36,18 @@ Windows 11 未激活，「设置 → 个性化」整类被锁 → 把 6 项功�
 - `tools\brightness.ps1` 独立可用，不受任何版本 bug 影响。
 - 诊断日志：`%TEMP%\WinCtlPanel2-diag.log`（每次启动追加显示器枚举与亮度探测结果）。
 
+## 开源仓库（2026-11-07 上线）
+
+- **GitHub**：https://github.com/Zen-GUAN/desktop-console （公开，MIT License）
+- Release：https://github.com/Zen-GUAN/desktop-console/releases/tag/v3.0.0 （含 `DesktopConsole-v3.0.0.exe`，16.1MB）
+- **坑：GitHub 资产名不支持非 ASCII**（中文上传会被归一成 default.exe，PATCH 中文名也无效）→ 发布二进制用 ASCII 名
+- 推送走 SSH 隧道代理（`_tools\proxy\proxy_on.ps1`，git 已配 github.com → 127.0.0.1:3128）
+
 ## 下一步
 
-1. ~~Kimi 执行悬浮球设置页~~ **已完成并通过 ZCode 验收**（2026-11-07，`v3-exe\verify_ball_settings.py` headless 16/16：能力检测双向/勾选排序即时保存/预览同步/断连回滚/v2 零请求；exe 已重打包）。仅剩肉眼项：深浅主题观感、380px 布局、tab 顺序、真球菜单顺序核对。
-2. **UI 层复验**：开一次 v3 面板，确认亮度滑杆可拖；确认后把 AGENT_HANDOFF §一 的「UI 待复验」注记去掉。
-3. **上传 GitHub**：仓库已初始化（main 分支），用户建远程后 `git remote add origin <url> && git push -u origin main`；exe 用 GitHub Release 发；LICENSE 待用户定。
-4. 可选：开机自启（Startup + VBS 方案，参考 `yuancheng` 项目）；代码签名。
-5. exe 打包清单的完成状态见 `AGENT_HANDOFF.md` §5.6。
+1. **UI 层复验**：开一次 v3 面板，确认亮度滑杆可拖 + 悬浮球设置页观感（深浅主题/380px 布局/tab 顺序/真球菜单顺序与设置一致）；确认后把 AGENT_HANDOFF §一 的「UI 待复验」注记去掉。
+2. 可选：开机自启（Startup + VBS 方案，参考 `yuancheng` 项目）；代码签名。
+3. exe 打包清单的完成状态见 `AGENT_HANDOFF.md` §5.6。
 
 ## 文件地图
 
