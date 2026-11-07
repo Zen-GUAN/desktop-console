@@ -1,0 +1,274 @@
+﻿# WinCtlPanel2 local HTTP backend. Keep UTF-8 with BOM for PowerShell 5.1.
+param(
+    [int]$Port = 0,
+    [switch]$NoBrowser,
+    [switch]$SelfTest
+)
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$script:Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+$script:UserProfile = [Environment]::GetFolderPath('UserProfile')
+$script:AppData = [Environment]::GetFolderPath('ApplicationData')
+$script:LocalAppData = [Environment]::GetFolderPath('LocalApplicationData')
+if ([string]::IsNullOrWhiteSpace($script:AppData)) { $script:AppData = Join-Path $script:UserProfile 'AppData\Roaming' }
+if ([string]::IsNullOrWhiteSpace($script:LocalAppData)) { $script:LocalAppData = Join-Path $script:UserProfile 'AppData\Local' }
+$env:APPDATA = $script:AppData
+$env:LOCALAPPDATA = $script:LocalAppData
+$script:DataDir = Join-Path $script:AppData 'WinCtlPanel'
+$script:BackupFile = Join-Path $DataDir 'backup.json'
+$script:BackupKeysSeen = @{}
+$script:PTheme = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
+$script:PAdv = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+$script:UiFile = Join-Path $script:AppData 'WinCtlPanel2\ui.json'
+$script:ExitRequested = $false
+$script:Topmost = $false
+$script:RotateFolder = ''
+$script:RotationEnabled = $false
+$script:Monitors = @()
+$script:Hotkeys = @{ brightnessUp=$false; brightnessDown=$false; theme=$false }
+if (-not (Test-Path $DataDir)) { New-Item -ItemType Directory -Path $DataDir -Force | Out-Null }
+if (-not (Test-Path (Split-Path -Parent $script:UiFile))) { New-Item -ItemType Directory -Path (Split-Path -Parent $script:UiFile) -Force | Out-Null }
+. (Join-Path $PSScriptRoot 'Native.ps1')
+
+# The following control functions preserve the original panel's tested logic.
+function ConvertTo-ABGR {
+    param([int]$R, [int]$G, [int]$B)
+    return [int](0xFF000000 -bor (($B -band 0xFF) -shl 16) -bor (($G -band 0xFF) -shl 8) -bor ($R -band 0xFF))
+}
+function Get-RegValue { param([string]$Path,[string]$Name,$Default) try { return (Get-ItemProperty -Path $Path -Name $Name -ErrorAction Stop).$Name } catch { return $Default } }
+function Set-RegValue { param([string]$Path,[string]$Name,[int]$Value) if (-not (Test-Path $Path)) { $null=New-Item -Path $Path -Force }; Set-ItemProperty -Path $Path -Name $Name -Value $Value -Type DWord }
+function Broadcast-Settings { param([string]$Param='') $res=[IntPtr]::Zero; $null=[W2]::SendMessageTimeout([IntPtr]0xFFFF,0x001A,[IntPtr]::Zero,$Param,0x0002,1000,[ref]$res) }
+function Add-Backup {
+    param([string]$Key,$Value)
+    if ($script:BackupKeysSeen.ContainsKey($Key)) { return }
+    $data=$null
+    if (Test-Path $script:BackupFile) { try { $data=Get-Content $script:BackupFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch { throw '备份文件无法读取，已停止修改。请先处理 %APPDATA%\WinCtlPanel\backup.json。' } }
+    if ($null -eq $data) { $data=[pscustomobject]@{created=(Get-Date -Format 'yyyy-MM-dd HH:mm:ss');values=[pscustomobject]@{}} }
+    if ($data.values.PSObject.Properties[$Key]) { $script:BackupKeysSeen[$Key]=$true; return }
+    $data.values | Add-Member -MemberType NoteProperty -Name $Key -Value $Value -Force
+    $data | ConvertTo-Json -Depth 5 | Set-Content -Path $script:BackupFile -Encoding UTF8
+    $script:BackupKeysSeen[$Key]=$true
+}
+function Initialize-Backup {
+    if (-not (Test-Path $script:BackupFile)) { return }
+    try { $data=Get-Content $script:BackupFile -Raw -Encoding UTF8 | ConvertFrom-Json; foreach($p in $data.values.PSObject.Properties){$script:BackupKeysSeen[$p.Name]=$true} }
+    catch { throw '已有备份文件损坏。为避免覆盖原始值，面板不会执行修改。' }
+}
+function Get-PhysMonitors {
+    $list=@(); $n=[Dxva2]::Enumerate()
+    if ($n -le 0) { return ,$list }
+    foreach($hMon in [Dxva2]::Handles) {
+        $cnt=[uint32]0
+        if (-not [Dxva2]::GetNumberOfPhysicalMonitorsFromHMONITOR($hMon,[ref]$cnt)) { continue }
+        if ($cnt -eq 0) { continue }
+        $buf=New-Object 'Dxva2+PHYSICAL_MONITOR[]' $cnt
+        if (-not [Dxva2]::GetPhysicalMonitorsFromHMONITOR($hMon,$cnt,$buf)) { continue }
+        for($i=0;$i -lt $cnt;$i++) {
+            $desc=(((-join $buf[$i].szPhysicalMonitorDescription) -replace ([string][char]0),'').Trim())
+            if (-not $desc) { $desc="显示器 $($list.Count+1)" }
+            $list += [pscustomobject]@{Handle=$buf[$i].hPhysicalMonitor;Desc=$desc}
+        }
+    }
+    return ,$list
+}
+function Get-BrightnessInfo { param($Handle) $min=[uint32]0;$cur=[uint32]0;$max=[uint32]0;if(-not [Dxva2]::GetMonitorBrightness($Handle,[ref]$min,[ref]$cur,[ref]$max)){return $null};return [pscustomobject]@{Min=$min;Cur=$cur;Max=$max} }
+function Get-Wallpaper { $sb=New-Object Text.StringBuilder 2048;$null=[W2]::SystemParametersInfo(0x0073,2048,$sb,0);return $sb.ToString() }
+function Set-WallpaperFile { param([string]$Path) Add-Backup 'wallpaper' (Get-Wallpaper);if(-not [W2]::SystemParametersInfo(0x0014,0,$Path,0x03)){throw '系统拒绝了壁纸设置，请确认图片存在且格式为 JPG、PNG 或 BMP。'};Broadcast-Settings '' }
+function Set-ThemeMode { param([bool]$Dark) Add-Backup 'appsLight' (Get-RegValue $script:PTheme 'AppsUseLightTheme' 1);Add-Backup 'sysLight' (Get-RegValue $script:PTheme 'SystemUsesLightTheme' 1);$v=1;if($Dark){$v=0};Set-RegValue $script:PTheme 'AppsUseLightTheme' $v;Set-RegValue $script:PTheme 'SystemUsesLightTheme' $v;Broadcast-Settings 'ImmersiveColorSet' }
+function Get-ThemeIsDark { return ((Get-RegValue $script:PTheme 'AppsUseLightTheme' 1) -eq 0) }
+function Set-AccentColor { param([int]$R,[int]$G,[int]$B) Add-Backup 'accent' (Get-RegValue $script:PTheme 'AccentColor' 0);Add-Backup 'colorPrevalence' (Get-RegValue $script:PTheme 'ColorPrevalence' 0);Set-RegValue $script:PTheme 'AccentColor' (ConvertTo-ABGR $R $G $B);Set-RegValue $script:PTheme 'ColorPrevalence' 1;Broadcast-Settings 'ImmersiveColorSet' }
+function Set-TaskbarAlign { param([int]$Value) Add-Backup 'taskbarAl' (Get-RegValue $script:PAdv 'TaskbarAl' 1);Set-RegValue $script:PAdv 'TaskbarAl' $Value;Broadcast-Settings '' }
+function ConvertTo-RegInt($v) { $n=[int64]$v;if($n -gt [int]::MaxValue){$n=$n-4294967296};return [int]$n }
+function Restore-All {
+    if (-not (Test-Path $script:BackupFile)) { return @() }
+    $data=Get-Content $script:BackupFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    $mons=$null;$failed=@()
+    foreach($p in $data.values.PSObject.Properties) {
+        try {
+            switch -Regex ($p.Name) {
+                '^wallpaper$' { if(-not [W2]::SystemParametersInfo(0x0014,0,[string]$p.Value,0x03)){throw '系统拒绝恢复壁纸'} }
+                '^appsLight$' { Set-RegValue $script:PTheme 'AppsUseLightTheme' (ConvertTo-RegInt $p.Value) }
+                '^sysLight$' { Set-RegValue $script:PTheme 'SystemUsesLightTheme' (ConvertTo-RegInt $p.Value) }
+                '^accent$' { Set-RegValue $script:PTheme 'AccentColor' (ConvertTo-RegInt $p.Value) }
+                '^colorPrevalence$' { Set-RegValue $script:PTheme 'ColorPrevalence' (ConvertTo-RegInt $p.Value) }
+                '^taskbarAl$' { Set-RegValue $script:PAdv 'TaskbarAl' (ConvertTo-RegInt $p.Value) }
+                '^bright:(\d+)$' {
+                    $idx=[int]$Matches[1];if($null -eq $mons){$mons=Get-PhysMonitors}
+                    if($idx -ge $mons.Count){throw '原显示器当前未连接'}
+                    $parts=[string]$p.Value -split ';';if($parts.Count -lt 3){throw '亮度备份格式错误'}
+                    if(-not [Dxva2]::SetMonitorBrightness($mons[$idx].Handle,[uint32]$parts[1])){throw '显示器拒绝恢复亮度，请检查 DDC/CI'}
+                }
+            }
+        } catch { $failed += ($p.Name + '：' + $_.Exception.Message) }
+    }
+    Broadcast-Settings 'ImmersiveColorSet';Broadcast-Settings ''
+    if($failed.Count -eq 0){Remove-Item $script:BackupFile -Force -ErrorAction SilentlyContinue;$script:BackupKeysSeen=@{}}
+    return $failed
+}
+function ConvertFrom-Accent([int64]$Value) {
+    $u=[uint32]($Value -band 0xFFFFFFFF);return '#{0:X2}{1:X2}{2:X2}' -f ($u -band 255),(($u -shr 8) -band 255),(($u -shr 16) -band 255)
+}
+function Get-MonitorState {
+    $result=@()
+    for($i=0;$i -lt $script:Monitors.Count;$i++) {
+        $info=Get-BrightnessInfo $script:Monitors[$i].Handle;$pct=0;$supported=$null -ne $info
+        if($supported){$span=[int]$info.Max-[int]$info.Min;if($span -gt 0){$pct=[Math]::Round(([int]$info.Cur-[int]$info.Min)*100.0/$span)}}
+        $result += [pscustomobject]@{index=$i;name=$script:Monitors[$i].Desc;supported=$supported;percent=$pct;raw=$(if($supported){[int]$info.Cur}else{0});min=$(if($supported){[int]$info.Min}else{0});max=$(if($supported){[int]$info.Max}else{0})}
+    }
+    return ,$result
+}
+function Get-State {
+    [ordered]@{ok=$true;monitors=@(Get-MonitorState);dark=(Get-ThemeIsDark);accent=(ConvertFrom-Accent (Get-RegValue $script:PTheme 'AccentColor' 0));taskbar=[int](Get-RegValue $script:PAdv 'TaskbarAl' 1);wallpaper=(Get-Wallpaper);backup=(Test-Path $script:BackupFile);topmost=$script:Topmost;rotation=$script:RotationEnabled;rotateFolder=$script:RotateFolder;hotkeys=[pscustomobject]$script:Hotkeys;offline=$true}
+}
+function Write-Json($Object,[int]$Status=200) {
+    $script:Response.StatusCode=$Status;$script:Response.ContentType='application/json; charset=utf-8'
+    $bytes=[Text.Encoding]::UTF8.GetBytes(($Object | ConvertTo-Json -Depth 8 -Compress));$script:Response.ContentLength64=$bytes.Length;$script:Response.OutputStream.Write($bytes,0,$bytes.Length)
+}
+function Get-RequestJson { $reader=New-Object IO.StreamReader($script:Request.InputStream,$script:Request.ContentEncoding);try{return ($reader.ReadToEnd() | ConvertFrom-Json)}finally{$reader.Dispose()} }
+function Assert-Api {
+    if($script:Request.HttpMethod -notin @('GET','POST')){throw '不支持的请求方式。'}
+    if($script:Request.Headers['X-WinCtl-Token'] -ne $script:Token){Write-Json @{ok=$false;message='本地请求验证失败。'} 403;return $false}
+    $origin=[string]$script:Request.Headers['Origin'];if($origin -and $origin -ne "http://127.0.0.1:$($script:Port)"){Write-Json @{ok=$false;message='已拒绝跨站请求。'} 403;return $false}
+    return $true
+}
+function Test-ImagePath($Path) { if(-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)){return $false};return ([IO.Path]::GetExtension($Path).ToLowerInvariant() -in @('.jpg','.jpeg','.png','.bmp')) }
+function Open-ImageDialog { $dlg=New-Object Windows.Forms.OpenFileDialog;$dlg.Filter='图片 (*.jpg;*.jpeg;*.png;*.bmp)|*.jpg;*.jpeg;*.png;*.bmp';$dlg.Title='选择桌面壁纸';try{if($dlg.ShowDialog($script:Window) -eq [Windows.Forms.DialogResult]::OK){return $dlg.FileName};return ''}finally{$dlg.Dispose()} }
+function Invoke-ExplorerRestart { Stop-Process -Name explorer -Force;Start-Sleep -Milliseconds 1200;if(-not (Get-Process explorer -ErrorAction SilentlyContinue)){Start-Process explorer} }
+
+function Invoke-Api([string]$Path) {
+    switch -Exact ($Path) {
+        'state' { Write-Json (Get-State);return }
+        'brightness' {
+            $body=Get-RequestJson;$idx=[int]$body.index;$pct=[Math]::Max(0,[Math]::Min(100,[int]$body.percent))
+            if($idx -lt 0 -or $idx -ge $script:Monitors.Count){throw '没有找到这台显示器，请重新打开面板检测。'}
+            $info=Get-BrightnessInfo $script:Monitors[$idx].Handle;if($null -eq $info){throw '你的显示器不支持 DDC/CI，或在显示器菜单里关闭了它。'}
+            $span=[int]$info.Max-[int]$info.Min;$raw=[int]$info.Min;if($span -gt 0){$raw=[int]([Math]::Round($pct*$span/100.0)+[int]$info.Min)}
+            Add-Backup ("bright:$idx") ('{0};{1};{2}' -f $info.Min,$info.Cur,$info.Max)
+            if(-not [Dxva2]::SetMonitorBrightness($script:Monitors[$idx].Handle,[uint32]$raw)){throw '亮度设置失败。你的显示器可能不支持 DDC/CI，或在显示器菜单里关闭了它。'}
+            Start-Sleep -Milliseconds 100;Write-Json ([ordered]@{ok=$true;backup=$true;state=(Get-State)});return
+        }
+        'theme' { $body=Get-RequestJson;Set-ThemeMode ([bool]$body.dark);Write-Json (Get-State);return }
+        'accent' {
+            $body=Get-RequestJson;$hex=[string]$body.color
+            if($hex -notmatch '^#[0-9a-fA-F]{6}$'){throw '请选择有效的六位十六进制颜色。'}
+            Set-AccentColor ([Convert]::ToInt32($hex.Substring(1,2),16)) ([Convert]::ToInt32($hex.Substring(3,2),16)) ([Convert]::ToInt32($hex.Substring(5,2),16));Write-Json (Get-State);return
+        }
+        'taskbar' { $body=Get-RequestJson;$v=[int]$body.value;if($v -notin @(0,1)){throw '任务栏对齐只能是左对齐或居中。'};Set-TaskbarAlign $v;Write-Json (Get-State);return }
+        'wallpaper/pick' { $file=Open-ImageDialog;if(-not $file){Write-Json @{ok=$true;cancelled=$true};return};Set-WallpaperFile $file;Write-Json (Get-State);return }
+        'wallpaper-preview' {
+            $file=Get-Wallpaper;if(-not (Test-ImagePath $file)){Write-Json @{ok=$false;message='没有可用的本地壁纸预览。'} 404;return}
+            $bytes=[IO.File]::ReadAllBytes($file);$script:Response.StatusCode=200;$script:Response.ContentType='image/'+$(if([IO.Path]::GetExtension($file) -match 'png'){'png'}elseif([IO.Path]::GetExtension($file) -match 'bmp'){'bmp'}else{'jpeg'});$script:Response.ContentLength64=$bytes.Length;$script:Response.OutputStream.Write($bytes,0,$bytes.Length);return
+        }
+        'wallpaper/restore' {
+            if(-not (Test-Path $script:BackupFile)){throw '还没有记录原壁纸，本次尚未更换过壁纸。'}
+            $d=Get-Content $script:BackupFile -Raw -Encoding UTF8|ConvertFrom-Json
+            if(-not $d.values.PSObject.Properties['wallpaper']){throw '备份中没有原壁纸记录。'}
+            if(-not [W2]::SystemParametersInfo(0x0014,0,[string]$d.values.wallpaper,0x03)){throw '系统拒绝恢复原壁纸，请确认原图片仍然存在。'}
+            Broadcast-Settings '';Write-Json (Get-State);return
+        }
+        'wallpaper/rotate' {
+            if($script:RotationEnabled){$script:RotationEnabled=$false;$script:RotateTimer.Stop();$script:RotateFolder=''}else{$dlg=New-Object Windows.Forms.FolderBrowserDialog;$dlg.Description='选择壁纸轮换文件夹';try{if($dlg.ShowDialog($script:Window) -ne [Windows.Forms.DialogResult]::OK){Write-Json @{ok=$true;cancelled=$true};return};$script:RotateFolder=$dlg.SelectedPath}finally{$dlg.Dispose()};$script:RotationEnabled=$true;$script:RotateTimer.Start()};Write-Json (Get-State);return
+        }
+        'restore' { $failed=@(Restore-All);if($failed.Count -gt 0){throw ('部分项目未能还原，备份已保留：' + ($failed -join '；'))};Write-Json (Get-State);return }
+        'window/topmost' { $body=Get-RequestJson;Set-Topmost ([bool]$body.value);Write-Json @{ok=$true;topmost=$script:Topmost};return }
+        'window/hide' { Write-Json @{ok=$true};$script:Response.Close();$script:Dispatcher.BeginInvoke([Action]{[W2]::ShowWindow($script:EdgeHandle,0)|Out-Null})|Out-Null;return }
+        'window/drag' { Write-Json @{ok=$true};$script:Response.Close();if($script:EdgeHandle -ne [IntPtr]::Zero){$script:Dispatcher.BeginInvoke([Action]{$script:Window.BeginTitleDrag($script:EdgeHandle)})|Out-Null};return }
+        'window/resize' { Write-Json @{ok=$true};$script:Response.Close();if($script:EdgeHandle -ne [IntPtr]::Zero){$script:Dispatcher.BeginInvoke([Action]{$script:Window.BeginResize($script:EdgeHandle)})|Out-Null};return }
+        'advanced/theme' { $dlg=New-Object Windows.Forms.OpenFileDialog;$dlg.Filter='主题文件 (*.theme)|*.theme';$dlg.InitialDirectory="$env:LOCALAPPDATA\Microsoft\Windows\Themes";try{if($dlg.ShowDialog($script:Window) -ne [Windows.Forms.DialogResult]::OK){Write-Json @{ok=$true;cancelled=$true};return};Start-Process rundll32.exe -ArgumentList ('shell32.dll,Control_RunDLL desk.cpl desk,@Themes /Action:OpenTheme /file:"'+$dlg.FileName+'"');Write-Json @{ok=$true;cancelled=$false}}finally{$dlg.Dispose()};return }
+        'advanced/lockscreen' {
+            $file=Open-ImageDialog;if(-not $file){Write-Json @{ok=$true;cancelled=$true};return};$img=$file.Replace("'","''")
+            $cmd="New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization' -Force | Out-Null; Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization' -Name 'LockScreenImage' -Value '$img'; Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization' -Name 'LockScreenImageStatus' -Value 1 -Type DWord"
+            $proc=Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-Command',$cmd -PassThru -ErrorAction Stop;$proc.WaitForExit(60000)|Out-Null;if($proc.ExitCode -ne 0){throw '锁屏设置未完成（UAC 被取消或系统拒绝）。'};Write-Json @{ok=$true;cancelled=$false};return
+        }
+        'advanced/restart-explorer' { Write-Json @{ok=$true};$script:Response.Close();$script:Dispatcher.BeginInvoke([Action]{Invoke-ExplorerRestart})|Out-Null;return }
+        'exit' { Write-Json @{ok=$true};$script:ExitRequested=$true;return }
+        default { Write-Json @{ok=$false;message='未知操作。'} 404;return }
+    }
+}
+function Find-EdgeWindow {
+    if($null -eq $script:EdgeProcess -or $script:EdgeProcess.HasExited){return [IntPtr]::Zero}
+    $found=[IntPtr]::Zero;$pidValue=[uint32]$script:EdgeProcess.Id
+    $callback=[W2+EnumWindowsProc]{param($h,$data)$p=[uint32]0;$null=[W2]::GetWindowThreadProcessId($h,[ref]$p);if($p -eq $pidValue -and [W2]::IsWindowVisible($h) -and [W2]::GetWindowTextLength($h) -gt 0){$script:FoundEdge=$h;return $false};return $true}
+    $script:FoundEdge=[IntPtr]::Zero;$null=[W2]::EnumWindows($callback,[IntPtr]::Zero);return $script:FoundEdge
+}
+function Set-Topmost([bool]$Value) { $script:Topmost=$Value;if($script:EdgeHandle -ne [IntPtr]::Zero){$after=[W2]::HWND_NOTOPMOST;if($Value){$after=[W2]::HWND_TOPMOST};$null=[W2]::SetWindowPos($script:EdgeHandle,$after,0,0,0,0,0x0013)};$state=@{topmost=$Value}|ConvertTo-Json;Set-Content -Path $script:UiFile -Value $state -Encoding UTF8 }
+function Open-Panel { if($script:EdgeHandle -ne [IntPtr]::Zero){$null=[W2]::ShowWindow($script:EdgeHandle,9);$null=[W2]::SetForegroundWindow($script:EdgeHandle);Set-Topmost $script:Topmost} }
+
+if($SelfTest) {
+    $fail=0
+    function Test([string]$Name,[bool]$Ok,[string]$Detail){$tag='PASS';if(-not $Ok){$tag='FAIL';$script:fail++};Write-Output "[$tag] $Name  $Detail"}
+    $files=@($MyInvocation.MyCommand.Path,(Join-Path $PSScriptRoot 'Native.ps1'))
+    foreach($f in $files){$b=[IO.File]::ReadAllBytes($f);Test '脚本编码 UTF-8 BOM' ($b.Length-ge 3-and$b[0]-eq 0xEF-and$b[1]-eq 0xBB-and$b[2]-eq 0xBF) ([IO.Path]::GetFileName($f))}
+    Test 'ABGR 红' ((ConvertTo-ABGR 255 0 0)-eq-16776961) ([string](ConvertTo-ABGR 255 0 0));Test 'ABGR 蓝' ((ConvertTo-ABGR 0 0 255)-eq-65536) ([string](ConvertTo-ABGR 0 0 255));Test 'ABGR 白' ((ConvertTo-ABGR 255 255 255)-eq-1) ([string](ConvertTo-ABGR 255 255 255))
+    $mons=Get-PhysMonitors;Test '枚举物理显示器' ($mons.Count-gt 0) "共 $($mons.Count) 个";$ddc=$false;$detail='无显示器';if($mons.Count-gt 0){$b=Get-BrightnessInfo $mons[0].Handle;if($b){$ddc=$true;$detail="$($mons[0].Desc): $($b.Min)/$($b.Cur)/$($b.Max)"}else{$detail='不支持 DDC/CI'}};Test 'DDC/CI 读亮度' $ddc $detail;Test 'DDC 失败可识别' ($null-eq(Get-BrightnessInfo ([IntPtr]::Zero))) '零句柄返回 null'
+    $wp=Get-Wallpaper;Test '读取当前壁纸' ($wp.Length-gt 0) $wp
+    $tmp=Join-Path $env:TEMP "wcp2_$([Guid]::NewGuid()).json";$old=$script:BackupFile;$seen=$script:BackupKeysSeen;$script:BackupFile=$tmp;$script:BackupKeysSeen=@{};Add-Backup 'taskbarAl' 1;Add-Backup 'taskbarAl' 0;$j=Get-Content $tmp -Raw|ConvertFrom-Json;Test '备份合并语义' ($j.values.taskbarAl-eq 1) '第二次写入未覆盖原值';Remove-Item $tmp -Force;$script:BackupFile=$old;$script:BackupKeysSeen=$seen
+    $html=Get-Content (Join-Path $script:Root 'ui\index.html') -Raw;$css=Get-Content (Join-Path $script:Root 'ui\style.css') -Raw;$js=Get-Content (Join-Path $script:Root 'ui\app.js') -Raw;Test '无外链资源' (($html+$css+$js)-notmatch '(https?:)?//[a-zA-Z0-9.-]+\.[a-zA-Z]') 'HTML/CSS/JS 无 CDN 或外链字体'
+    foreach($id in @('brightness-slider','theme-switch','accent-swatches','taskbar-switch','wallpaper-button','restore-button')){Test "界面控件 $id" ($html-match "id=`"$id`"") '存在'}
+    if($fail-eq 0){Write-Output '基础自测全部通过';exit 0}else{Write-Output "自测失败 $fail 项";exit 1}
+}
+
+$createdNew=$false;$script:Mutex=New-Object Threading.Mutex($true,'Local\WinCtlPanel2_SingleInstance',[ref]$createdNew)
+if(-not $createdNew){[Windows.Forms.MessageBox]::Show('WinCtl 2 已经在运行了，请查看系统托盘。','WinCtl 2')|Out-Null;exit 0}
+Initialize-Backup
+$script:Token=[Guid]::NewGuid().ToString('N')
+if($Port -le 0){$tcp=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,0);$tcp.Start();$script:Port=([Net.IPEndPoint]$tcp.LocalEndpoint).Port;$tcp.Stop()}else{$script:Port=$Port}
+$script:Listener=New-Object Net.HttpListener;$script:Listener.Prefixes.Add("http://127.0.0.1:$($script:Port)/");$script:Listener.Start()
+$script:Window=New-Object WinCtlWindow;$script:Dispatcher=New-Object Windows.Forms.Control;$script:Dispatcher.CreateControl();$null=$script:Dispatcher.Handle;$script:Tray=New-Object TrayIcon
+$script:Monitors=@(Get-PhysMonitors)
+$script:RotateTimer=New-Object Windows.Forms.Timer;$script:RotateTimer.Interval=600000
+$script:RotateTimer.add_Tick({try{$files=@(Get-ChildItem -Path $script:RotateFolder -Include *.jpg,*.jpeg,*.png,*.bmp -File -Recurse -ErrorAction SilentlyContinue);if($files.Count){Set-WallpaperFile $files[(Get-Random -Maximum $files.Count)].FullName}}catch{}})
+$script:Tray.add_ShowRequested({Open-Panel});$script:Tray.add_TopmostRequested({ param($s,$v) Set-Topmost ([bool]$v) });$script:Tray.add_ExitRequested({$script:ExitRequested=$true})
+$script:Window.add_Closing({$script:ExitRequested=$true})
+$script:Window.add_HotKey({param($s,$id)
+    try {
+        if($id -in @(1,2)){
+            $step=5;if($id-eq 2){$step=-5}
+            for($i=0;$i-lt$script:Monitors.Count;$i++){$info=Get-BrightnessInfo $script:Monitors[$i].Handle;if($null-eq$info){continue};$span=[int]$info.Max-[int]$info.Min;if($span-le 0){continue};$pct=[Math]::Round(([int]$info.Cur-[int]$info.Min)*100.0/$span)+$step;$pct=[Math]::Max(0,[Math]::Min(100,$pct));$raw=[uint32]([Math]::Round($pct*$span/100.0)+[int]$info.Min);Add-Backup "bright:$i" ('{0};{1};{2}'-f$info.Min,$info.Cur,$info.Max);$null=[Dxva2]::SetMonitorBrightness($script:Monitors[$i].Handle,$raw)}
+        }else{Set-ThemeMode (-not (Get-ThemeIsDark))}
+    }catch{}
+})
+$script:Hotkeys.brightnessUp=[W2]::RegisterHotKey($script:Window.Handle,1,3,0x26);$script:Hotkeys.brightnessDown=[W2]::RegisterHotKey($script:Window.Handle,2,3,0x28);$script:Hotkeys.theme=[W2]::RegisterHotKey($script:Window.Handle,3,3,0x44)
+$script:EdgeProcess=$null;$script:EdgeHandle=[IntPtr]::Zero
+if(-not $NoBrowser){
+    $edge=@("$env:ProgramFiles(x86)\Microsoft\Edge\Application\msedge.exe","$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe","$env:LOCALAPPDATA\Microsoft\Edge\Application\msedge.exe")|Where-Object{Test-Path $_}|Select-Object -First 1
+    if(-not $edge){throw '没有找到 Microsoft Edge。请安装 Edge，或使用 -NoBrowser 后访问本地面板地址。'}
+    $profile=Join-Path $env:LOCALAPPDATA 'WinCtlPanel2\EdgeProfile'
+    $args=@("--app=http://127.0.0.1:$($script:Port)/","--user-data-dir=$profile",'--no-first-run','--no-default-browser-check','--window-size=380,600','--window-position=80,60','--disable-features=msEdgeSidebarV2')
+    $script:EdgeProcess=Start-Process -FilePath $edge -ArgumentList $args -PassThru
+}
+$script:UiTimer=New-Object Windows.Forms.Timer;$script:UiTimer.Interval=400
+$script:UiTimer.add_Tick({
+    if($script:ExitRequested){$script:UiTimer.Stop();$script:Listener.Stop();return}
+    if($null-ne$script:EdgeProcess -and $script:EdgeProcess.HasExited){$script:ExitRequested=$true;return}
+    if($script:EdgeHandle-eq[IntPtr]::Zero){$script:EdgeHandle=Find-EdgeWindow}
+    while($script:Listener.IsListening -and $script:ContextQueue.Count-gt 0){$ctx=$script:ContextQueue.Dequeue();if($null-ne$ctx){Invoke-WebRequest $ctx}}
+})
+$script:ContextQueue=New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'
+function Invoke-WebRequest($Context) {
+    $script:Request=$Context.Request;$script:Response=$Context.Response
+    try {
+        $path=$script:Request.Url.AbsolutePath
+        if($path.StartsWith('/api/')){if(Assert-Api){Invoke-Api $path.Substring(5)};return}
+        if($script:Request.HttpMethod-ne'GET'){Write-Json @{ok=$false;message='不支持的请求方式。'} 405;return}
+        if($path-eq'/'){$file=Join-Path $script:Root 'ui\index.html';$html=[IO.File]::ReadAllText($file).Replace('__WINCTL_TOKEN__',$script:Token);$bytes=[Text.Encoding]::UTF8.GetBytes($html);$script:Response.ContentType='text/html; charset=utf-8'}else{
+            $rel=[Uri]::UnescapeDataString($path.TrimStart('/')).Replace('/','\');$file=[IO.Path]::GetFullPath((Join-Path $script:Root $rel));$uiRoot=[IO.Path]::GetFullPath((Join-Path $script:Root 'ui'))+[IO.Path]::DirectorySeparatorChar
+            if(-not $file.StartsWith($uiRoot,[StringComparison]::OrdinalIgnoreCase)-or-not(Test-Path -LiteralPath $file -PathType Leaf)){Write-Json @{ok=$false;message='资源不存在。'} 404;return}
+            $bytes=[IO.File]::ReadAllBytes($file);$script:Response.ContentType=switch([IO.Path]::GetExtension($file)){'.css'{'text/css; charset=utf-8'}'.js'{'application/javascript; charset=utf-8'}'.svg'{'image/svg+xml'}default{'application/octet-stream'}}
+        }
+        $script:Response.StatusCode=200;$script:Response.Headers['Cache-Control']='no-store';$script:Response.Headers['X-Content-Type-Options']='nosniff';$script:Response.ContentLength64=$bytes.Length;$script:Response.OutputStream.Write($bytes,0,$bytes.Length)
+    }catch{try{Write-Json @{ok=$false;message=$_.Exception.Message} 500}catch{}}finally{try{$script:Response.Close()}catch{}}
+}
+$script:UiTimer.Start()
+try {
+    while($script:Listener.IsListening){
+        $ar=$script:Listener.BeginGetContext($null,$null)
+        while(-not$ar.AsyncWaitHandle.WaitOne(100)){[Windows.Forms.Application]::DoEvents();if($script:ExitRequested){break}}
+        [Windows.Forms.Application]::DoEvents();if($script:ExitRequested){break}
+        if($ar.IsCompleted){try{$ctx=$script:Listener.EndGetContext($ar);$script:ContextQueue.Enqueue($ctx)}catch{}}
+    }
+}finally{
+    $script:UiTimer.Stop();$script:RotateTimer.Stop();$script:RotateTimer.Dispose();if($script:Listener.IsListening){$script:Listener.Stop()};$script:Listener.Close()
+    $null=[W2]::UnregisterHotKey($script:Window.Handle,1);$null=[W2]::UnregisterHotKey($script:Window.Handle,2);$null=[W2]::UnregisterHotKey($script:Window.Handle,3)
+    $script:Tray.Dispose();foreach($m in $script:Monitors){try{$null=[Dxva2]::DestroyPhysicalMonitor($m.Handle)}catch{}};$script:Window.DestroyHandle();$script:Dispatcher.Dispose();$script:Mutex.ReleaseMutex();$script:Mutex.Dispose()
+}

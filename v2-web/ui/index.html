@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="winctl-token" content="__WINCTL_TOKEN__">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>WinCtl · 桌面控制台</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='10' fill='%238b9dff'/%3E%3Cpath d='M8 10l4 12 4-8 4 8 4-12' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/ui/style.css">
+  <script src="/ui/app.js" defer></script>
+</head>
+<body data-theme="dark">
+  <svg class="svg-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-logo" viewBox="0 0 24 24"><path d="M4 6.5 7.4 18 12 10l4.6 8L20 6.5"/><path d="M12 3v2"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24"><path d="m9 4 6 0 1 6 3 3H5l3-3 1-6Z"/><path d="M12 13v7"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M6 12h12"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.5"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"/></symbol>
+    <symbol id="i-sun-low" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 3v2M3 12h2M19 12h2M12 19v2"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 15.4A8.5 8.5 0 0 1 8.6 4a8.5 8.5 0 1 0 11.4 11.4Z"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2.5"/><path d="M8 21h8M12 17v4"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="m12 3 1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7L12 3Z"/><path d="m19 16 .7 2.3L22 19l-2.3.7L19 22l-.7-2.3L16 19l2.3-.7L19 16Z"/></symbol>
+    <symbol id="i-task-left" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M6 15h4M12 15h2M16 15h2"/></symbol>
+    <symbol id="i-task-center" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M8 15h8"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m4 17 5-5 4 4 3-3 5 5"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+    <symbol id="i-restore" viewBox="0 0 24 24"><path d="M4 8V3m0 5h5M4.7 8A8.5 8.5 0 1 1 4 15"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h4M12 7h8M4 17h8M16 17h4"/><circle cx="10" cy="7" r="2"/><circle cx="14" cy="17" r="2"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m6 12 4 4 8-9"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2.5"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol>
+    <symbol id="i-theme" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18h1.5a2 2 0 0 0 0-4H12a1.5 1.5 0 0 1 0-3h4a5 5 0 0 0 5-5c0-3.3-4-6-9-6Z"/><circle cx="7.5" cy="10" r=".8"/><circle cx="10" cy="6.8" r=".8"/><circle cx="15" cy="7" r=".8"/></symbol>
+    <symbol id="i-restart" viewBox="0 0 24 24"><path d="M20 7v5h-5M19.2 12a7.5 7.5 0 1 0-1.3 5.6"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/></symbol>
+  </svg>
+
+  <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>
+  <div class="app-shell" id="app-shell">
+    <header class="titlebar" id="titlebar">
+      <div class="brand">
+        <span class="brand-mark"><svg><use href="#i-logo"></use></svg></span>
+        <span class="brand-name">WinCtl<span>2</span></span>
+      </div>
+      <div class="window-actions">
+        <button class="window-button" id="pin-button" type="button" title="窗口置顶" aria-label="窗口置顶" aria-pressed="false"><svg><use href="#i-pin"></use></svg></button>
+        <button class="window-button" id="minimize-button" type="button" title="收起到托盘" aria-label="收起到托盘"><svg><use href="#i-minus"></use></svg></button>
+        <button class="window-button close-button" id="close-button" type="button" title="退出面板" aria-label="退出面板"><svg><use href="#i-close"></use></svg></button>
+      </div>
+    </header>
+
+    <main class="content">
+      <section class="intro" aria-label="面板状态">
+        <div><p class="eyebrow">YOUR DESKTOP, YOUR WAY</p><h1>桌面控制台</h1></div>
+        <span class="local-pill" id="local-pill"><i></i>本地就绪</span>
+      </section>
+
+      <section class="card brightness-card" aria-labelledby="brightness-heading">
+        <div class="section-heading">
+          <div class="heading-label"><span class="section-icon mint"><svg><use href="#i-monitor"></use></svg></span><h2 id="brightness-heading">屏幕亮度</h2><span class="subtle-tag">DDC / CI</span></div>
+          <output class="brightness-value" id="brightness-value" for="brightness-slider">--<small>%</small></output>
+        </div>
+        <div class="slider-row">
+          <svg class="slider-sun"><use href="#i-sun-low"></use></svg>
+          <input id="brightness-slider" class="brightness-slider" type="range" min="0" max="100" value="50" step="1" aria-label="屏幕亮度" disabled>
+          <svg class="slider-sun large"><use href="#i-sun"></use></svg>
+        </div>
+        <div class="monitor-footer"><div class="monitor-tabs" id="monitor-tabs" role="tablist" aria-label="选择显示器"></div><span class="monitor-name" id="monitor-name">正在检测显示器…</span></div>
+      </section>
+
+      <section class="card appearance-card" aria-labelledby="appearance-heading">
+        <div class="section-heading compact">
+          <div class="heading-label"><span class="section-icon violet"><svg><use href="#i-sparkle"></use></svg></span><h2 id="appearance-heading">个性化</h2></div>
+          <span class="instant-label">即时生效</span>
+        </div>
+
+        <div class="control-row mode-row">
+          <span class="control-label">颜色模式</span>
+          <div class="segmented" id="theme-switch" role="group" aria-label="系统颜色模式">
+            <button type="button" data-theme-value="light" aria-pressed="false"><svg><use href="#i-sun"></use></svg>浅色</button>
+            <button type="button" data-theme-value="dark" aria-pressed="false"><svg><use href="#i-moon"></use></svg>深色</button>
+          </div>
+        </div>
+
+        <div class="accent-row">
+          <div class="accent-caption"><span class="control-label">强调色</span><span id="accent-value">—</span></div>
+          <div class="swatches" id="accent-swatches" role="group" aria-label="系统强调色">
+            <button type="button" class="swatch" data-color="#8B9DFF" style="--swatch:#8B9DFF" aria-label="雾蓝紫" title="雾蓝紫"><svg><use href="#i-check"></use></svg></button>
+            <button type="button" class="swatch" data-color="#65CDB1" style="--swatch:#65CDB1" aria-label="薄荷绿" title="薄荷绿"><svg><use href="#i-check"></use></svg></button>
+            <button type="button" class="swatch" data-color="#F2B66D" style="--swatch:#F2B66D" aria-label="暖阳橙" title="暖阳橙"><svg><use href="#i-check"></use></svg></button>
+            <button type="button" class="swatch" data-color="#ED8D9F" style="--swatch:#ED8D9F" aria-label="蔷薇粉" title="蔷薇粉"><svg><use href="#i-check"></use></svg></button>
+            <button type="button" class="swatch" data-color="#70B7ED" style="--swatch:#70B7ED" aria-label="晴空蓝" title="晴空蓝"><svg><use href="#i-check"></use></svg></button>
+            <label class="custom-color" title="自定义强调色"><svg><use href="#i-plus"></use></svg><input type="color" id="custom-accent" value="#8b9dff" aria-label="自定义强调色"></label>
+          </div>
+        </div>
+
+        <div class="control-row taskbar-row">
+          <span class="control-label">任务栏对齐</span>
+          <div class="segmented icon-segmented" id="taskbar-switch" role="group" aria-label="任务栏对齐方式">
+            <button type="button" data-align="0" aria-pressed="false"><svg><use href="#i-task-left"></use></svg>左对齐</button>
+            <button type="button" data-align="1" aria-pressed="false"><svg><use href="#i-task-center"></use></svg>居中</button>
+          </div>
+        </div>
+      </section>
+
+      <button class="card wallpaper-card" id="wallpaper-button" type="button" aria-label="更换桌面壁纸">
+        <span class="wallpaper-preview" id="wallpaper-preview"><svg><use href="#i-image"></use></svg><img id="wallpaper-image" alt="当前壁纸缩略图" hidden></span>
+        <span class="wallpaper-copy"><span class="wallpaper-title">桌面壁纸</span><span class="wallpaper-name" id="wallpaper-name">正在读取…</span></span>
+        <span class="wallpaper-action">更换<svg><use href="#i-chevron"></use></svg></span>
+      </button>
+
+      <button class="restore-button" id="restore-button" type="button"><svg><use href="#i-restore"></use></svg><span>一键还原</span><small id="restore-hint">回到初次改动前</small></button>
+      <div class="under-actions"><button id="advanced-button" type="button"><svg><use href="#i-sliders"></use></svg>更多工具</button><span>LOCAL <i></i> OFFLINE</span></div>
+    </main>
+
+    <footer class="statusbar" id="statusbar" role="status" aria-live="polite"><span class="status-dot"></span><span id="status-text">正在连接本地服务…</span><span class="status-version">2.0</span></footer>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"><svg><use href="#i-check"></use></svg><span></span></div>
+
+  <dialog class="sheet" id="advanced-dialog" aria-labelledby="advanced-title">
+    <div class="sheet-header"><div><p class="eyebrow">MORE TOOLS</p><h2 id="advanced-title">更多工具</h2></div><button class="window-button" data-close-dialog="advanced-dialog" aria-label="关闭更多工具"><svg><use href="#i-close"></use></svg></button></div>
+    <p class="sheet-description">保留原版的进阶能力，按需使用。</p>
+    <div class="tool-list">
+      <button id="rotate-button"><span class="tool-icon"><svg><use href="#i-folder"></use></svg></span><span><strong>壁纸轮换</strong><small id="rotate-detail">选择文件夹，每 10 分钟随机更换</small></span><span class="tool-value" id="rotate-value">关闭</span></button>
+      <button id="wallpaper-restore-button"><span class="tool-icon"><svg><use href="#i-image"></use></svg></span><span><strong>仅还原壁纸</strong><small>不影响其他个性化设置</small></span><svg class="tool-chevron"><use href="#i-chevron"></use></svg></button>
+      <button id="theme-file-button"><span class="tool-icon"><svg><use href="#i-theme"></use></svg></span><span><strong>应用 .theme 主题</strong><small>调用 Windows 主题引擎 · 实验性</small></span><svg class="tool-chevron"><use href="#i-chevron"></use></svg></button>
+      <button id="lockscreen-button"><span class="tool-icon"><svg><use href="#i-lock"></use></svg></span><span><strong>设置锁屏图片</strong><small>写入组策略，需要确认 UAC</small></span><svg class="tool-chevron"><use href="#i-chevron"></use></svg></button>
+      <button id="explorer-button"><span class="tool-icon"><svg><use href="#i-restart"></use></svg></span><span><strong>重启资源管理器</strong><small>任务栏对齐未刷新时使用</small></span><svg class="tool-chevron"><use href="#i-chevron"></use></svg></button>
+    </div>
+    <div class="shortcut-note"><svg><use href="#i-info"></use></svg><div><strong>全局快捷键</strong><p>Ctrl + Alt + ↑ / ↓ 调节亮度<br>Ctrl + Alt + D 切换深浅色</p><small id="hotkey-status">正在检查热键状态…</small></div></div>
+  </dialog>
+
+  <dialog class="confirm-dialog" id="confirm-dialog" aria-labelledby="confirm-title">
+    <span class="confirm-icon"><svg><use href="#i-info"></use></svg></span><h2 id="confirm-title">确认操作</h2><p id="confirm-message"></p><div class="confirm-actions"><button class="secondary-button" id="confirm-cancel">取消</button><button class="primary-button" id="confirm-ok">继续</button></div>
+  </dialog>
+
+  <div class="resize-grip" id="resize-grip" title="拖拽调整窗口大小" aria-hidden="true"></div>
+</body>
+</html>

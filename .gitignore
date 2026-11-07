@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+
+# PyInstaller 产物（build.py 一键重建，icon.ico 由 gen_icon.py 生成）
+build/
+dist/
+*.spec
+icon.ico
+
+# 运行/诊断日志
+*.log
+*.log.err
