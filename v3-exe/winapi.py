@@ -761,6 +761,10 @@ class BallHost:
         self._slider_drag = False
         self._morph = None           # {'phase': 'out'|'in', 'from': (x,y,w,h), 'to': (x,y,w,h), 'step': n}
         self._hover_suppress = False  # 面板缩回后光标恰在球上：等离开再允许悬停弹出（防拍抖）
+        self._panel_drag = None
+        self._panel_dragging = False
+        self._panel_pos = (0, 0)
+        self._click_row = None
 
     # ---- lifecycle ----
     def start(self, x=None, y=None, tucked=True):
@@ -1215,42 +1219,91 @@ class BallHost:
                     self._morph = None
                 return 0
             if msg == WM_LBUTTONDOWN:
+                if self._morph:
+                    return 0  # morph 动画期间忽略输入
                 pt = wintypes.POINT()
                 user32.GetCursorPos(ctypes.byref(pt))
-                user32.ScreenToClient(hwnd, ctypes.byref(pt))
-                if self._slider_pct is not None and self._slider_y0 <= pt.y <= self._slider_y1:
+                client = wintypes.POINT(pt.x, pt.y)
+                user32.ScreenToClient(hwnd, ctypes.byref(client))
+                if self._slider_pct is not None and self._slider_y0 <= client.y <= self._slider_y1:
                     self._slider_drag = True
                     user32.SetCapture(hwnd)
-                    self._apply_slider_x(pt.x)
+                    self._apply_slider_x(client.x)
                     return 0
-                row = (pt.y - self._rows_y0) // self._panel_row_h
-                if 0 <= row < len(self._rows):
-                    fid = self._rows[row][0]
-                    self._hide_panel()
-                    if fid and self.on_action is not None:
-                        self.on_action(fid)
-                    return 0
-                self._hide_panel()  # 点空白收起
+                row = (client.y - self._rows_y0) // self._panel_row_h
+                self._click_row = row if 0 <= row < len(self._rows) else None
+                pr = wintypes.RECT()
+                user32.GetWindowRect(hwnd, ctypes.byref(pr))
+                self._panel_drag = {'start': (pt.x, pt.y), 'panel_pos': (pr.left, pr.top)}
+                self._panel_pos = (pr.left, pr.top)
+                self._panel_dragging = False
+                user32.SetCapture(hwnd)
                 return 0
-            if msg == 0x0200:  # WM_MOUSEMOVE：滑块拖动 / 行高亮
+            if msg == 0x0200:  # WM_MOUSEMOVE：滑块拖动 / 面板拖动 / 行高亮
                 tme = TRACKMOUSEEVENT(ctypes.sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd, 0)
                 user32.TrackMouseEvent(ctypes.byref(tme))
                 pt = wintypes.POINT()
                 user32.GetCursorPos(ctypes.byref(pt))
-                user32.ScreenToClient(hwnd, ctypes.byref(pt))
+                client = wintypes.POINT(pt.x, pt.y)
+                user32.ScreenToClient(hwnd, ctypes.byref(client))
                 if self._slider_drag:
-                    self._apply_slider_x(pt.x)
+                    self._apply_slider_x(client.x)
                     return 0
-                row = (pt.y - self._rows_y0) // self._panel_row_h
+                if self._panel_drag is not None:
+                    thr = max(4, int(round(4 * self.scale)))
+                    dx = pt.x - self._panel_drag['start'][0]
+                    dy = pt.y - self._panel_drag['start'][1]
+                    if not self._panel_dragging and (abs(dx) > thr or abs(dy) > thr):
+                        self._panel_dragging = True
+                        self._hover_row = -1
+                    if self._panel_dragging:
+                        # 面板与隐藏中的球同步移动
+                        new_px = self._panel_drag['panel_pos'][0] + dx
+                        new_py = self._panel_drag['panel_pos'][1] + dy
+                        self._cur = [self._cur[0] + (new_px - self._panel_pos[0]),
+                                     self._cur[1] + (new_py - self._panel_pos[1])]
+                        self._panel_pos = (new_px, new_py)
+                        self._edge = None
+                        user32.SetWindowPos(hwnd, wintypes.HWND(-1), new_px, new_py, 0, 0,
+                                            SWP_NOSIZE | SWP_NOACTIVATE)
+                        user32.SetWindowPos(self.hwnd, wintypes.HWND(-1), int(self._cur[0]),
+                                            int(self._cur[1]), 0, 0, SWP_NOSIZE | SWP_NOACTIVATE)
+                    return 0
+                row = (client.y - self._rows_y0) // self._panel_row_h
                 row = row if 0 <= row < len(self._rows) else -1
                 if row != self._hover_row:
                     self._hover_row = row
                     user32.InvalidateRect(hwnd, None, True)
                 return 0
-            if msg == 0x0202:  # WM_LBUTTONUP
+            if msg == 0x0202:  # WM_LBUTTONUP：拖动结算 / 行点击 / 空白收起
                 if self._slider_drag:
                     self._slider_drag = False
                     user32.ReleaseCapture()
+                    return 0
+                if self._panel_drag is not None:
+                    user32.ReleaseCapture()
+                    if self._panel_dragging:
+                        # 松手结算：靠边 → 收起贴边；中间 → 保持展开（球同步在面板下方）
+                        self._anchor = list(self._clamp(self._cur))
+                        self._edge = self._nearest_edge(self._anchor)[0]
+                        self._tucked = self._edge is not None
+                        if self.on_move_end is not None:
+                            try:
+                                self.on_move_end(self._anchor[0], self._anchor[1], self._tucked)
+                            except Exception:
+                                pass
+                        if self._tucked:
+                            self._hide_panel()
+                    elif self._click_row is not None:
+                        fid = self._rows[self._click_row][0]
+                        self._hide_panel()
+                        if fid and self.on_action is not None:
+                            self.on_action(fid)
+                    else:
+                        self._hide_panel()  # 点空白收起
+                    self._panel_drag = None
+                    self._panel_dragging = False
+                    self._click_row = None
                 return 0
             if msg == WM_MOUSELEAVE:
                 user32.SetTimer(self.hwnd, 2, 350, None)  # 移回球上则不收起
