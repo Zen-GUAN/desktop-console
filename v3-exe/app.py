@@ -109,6 +109,59 @@ def load_ball_config():
         pass
 
 
+def load_ui_state():
+    """%APPDATA%\\WinCtlPanel2\\ui.json：topmost + 窗口几何（width/height/x/y）。"""
+    try:
+        if os.path.exists(UI_STATE_FILE):
+            with open(UI_STATE_FILE, encoding='utf-8-sig') as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def update_ui_state(**kwargs):
+    """合并写入 ui.json（原子替换）；None 值跳过。"""
+    with _ui_state_lock:
+        try:
+            data = load_ui_state()
+            data.update({k: v for k, v in kwargs.items() if v is not None})
+            os.makedirs(os.path.dirname(UI_STATE_FILE), exist_ok=True)
+            tmp = UI_STATE_FILE + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(data, f)
+            os.replace(tmp, UI_STATE_FILE)
+        except Exception:
+            pass
+
+
+_ui_state_timer = None
+
+
+def schedule_ui_save(**kwargs):
+    """拖动/缩放高频事件防抖 800ms 落盘。"""
+    global _ui_state_timer
+    _ui_state_pending.update({k: v for k, v in kwargs.items() if v is not None})
+    if _ui_state_timer is not None:
+        _ui_state_timer.cancel()
+    _ui_state_timer = threading.Timer(0.8, _flush_ui_state)
+    _ui_state_timer.daemon = True
+    _ui_state_timer.start()
+
+
+_ui_state_pending = {}
+_ui_state_lock = threading.Lock()
+
+
+def _flush_ui_state():
+    global _ui_state_pending, _ui_state_timer
+    with _ui_state_lock:
+        pending, _ui_state_pending = _ui_state_pending, {}
+    if pending:
+        update_ui_state(**pending)
+
+
 def save_ball_config():
     try:
         os.makedirs(os.path.dirname(BALL_CONFIG_FILE), exist_ok=True)
@@ -878,13 +931,14 @@ class GuiHost:
         self.ball = None
 
     def hide_window(self):
+        # pywebview hide 之外再 ctypes 兜底一次，保证「收起到托盘」必定生效
         try:
             self.window.hide()
         except Exception:
-            hwnd = winapi.find_main_hwnd(APP_TITLE)
-            if hwnd:
-                import ctypes
-                ctypes.windll.user32.ShowWindow(hwnd, 0)
+            pass
+        hwnd = winapi.find_main_hwnd(APP_TITLE)
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
 
     def minimize_window(self):
         try:
@@ -903,22 +957,39 @@ class GuiHost:
             ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
             ctypes.windll.user32.SetForegroundWindow(hwnd)
 
+    def _on_resized(self, width, height):
+        self._geo.update(width=int(width), height=int(height))
+        schedule_ui_save(width=int(width), height=int(height))
+
+    def _on_moved(self, x, y):
+        self._geo.update(x=int(x), y=int(y))
+        schedule_ui_save(x=int(x), y=int(y))
+
+    def _on_closing(self):
+        _flush_ui_state()  # 关窗前把防抖里的几何落盘
+
     def set_topmost(self, value):
         STATE['topmost'] = bool(value)
         hwnd = winapi.find_main_hwnd(APP_TITLE)
         winapi.apply_topmost(hwnd, value)
-        try:
-            os.makedirs(os.path.dirname(UI_STATE_FILE), exist_ok=True)
-            with open(UI_STATE_FILE, 'w', encoding='utf-8') as f:
-                json.dump({'topmost': bool(value)}, f)
-        except Exception:
-            pass
+        update_ui_state(topmost=bool(value))
 
     def run(self, port):
         import webview
+        ui = load_ui_state()
+        self._geo = {'width': int(ui.get('width') or 380), 'height': int(ui.get('height') or 600),
+                     'x': int(ui['x']) if isinstance(ui.get('x'), int) else 80,
+                     'y': int(ui['y']) if isinstance(ui.get('y'), int) else 60}
         self.window = webview.create_window(
             APP_TITLE, 'http://127.0.0.1:%d/' % port,
-            width=380, height=600, x=80, y=60, min_size=(340, 480))
+            width=self._geo['width'], height=self._geo['height'],
+            x=self._geo['x'], y=self._geo['y'], min_size=(340, 480))
+        try:
+            self.window.events.resized += self._on_resized
+            self.window.events.moved += self._on_moved
+            self.window.events.closing += self._on_closing
+        except Exception:
+            pass
         self.tray = winapi.TrayHost(
             APP_TITLE, icon_path(),
             on_show=self.show_window,
@@ -1049,13 +1120,7 @@ def main():
         ctypes.windll.user32.MessageBoxW(0, str(exc), APP_TITLE, 0x10)
         return 1
 
-    STATE['topmost'] = False
-    try:
-        if os.path.exists(UI_STATE_FILE):
-            with open(UI_STATE_FILE, encoding='utf-8-sig') as f:
-                STATE['topmost'] = bool(json.load(f).get('topmost'))
-    except Exception:
-        pass
+    STATE['topmost'] = bool(load_ui_state().get('topmost'))
 
     SERVER_TOKEN = uuid.uuid4().hex
     server = ThreadingHTTPServer(('127.0.0.1', args.port if args.port > 0 else 0), Handler)

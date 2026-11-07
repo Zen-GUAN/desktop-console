@@ -574,6 +574,9 @@ user32.SetLayeredWindowAttributes.restype = wintypes.BOOL
 gdi32.CreateSolidBrush.argtypes = [wintypes.COLORREF]
 gdi32.CreateSolidBrush.restype = wintypes.HBRUSH
 gdi32.CreateFontW.restype = wintypes.HFONT
+gdi32.CreateFontW.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                              wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+                              wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.LPCWSTR]
 gdi32.GetTextExtentPoint32W.argtypes = [wintypes.HDC, wintypes.LPCWSTR, ctypes.c_int, ctypes.POINTER(_SIZE)]
 gdi32.GetTextExtentPoint32W.restype = wintypes.BOOL
 gdi32.CreateRoundRectRgn.restype = wintypes.HRGN
@@ -603,6 +606,18 @@ SWP_SHOWWINDOW = 0x0040
 MF_POPUP = 0x00000010
 MF_CHECKED = 0x00000008
 MF_SEPARATOR = 0x00000800
+
+def _ball_log_exc(context):
+    """球/面板异常落盘（windowed exe 的 stderr 不可见）。"""
+    try:
+        import traceback
+        log = os.path.join(os.environ.get('TEMP', ''), 'WinCtlPanel3-ball.log')
+        with open(log, 'a', encoding='utf-8') as f:
+            f.write('=== %s %s ===\n' % (time.strftime('%Y-%m-%d %H:%M:%S'), context))
+            traceback.print_exc(file=f)
+    except Exception:
+        pass
+
 
 def _seg_dist(px, py, a, b):
     ax, ay = a
@@ -720,14 +735,7 @@ class BallHost:
         try:
             self._run_inner()
         except Exception:
-            try:
-                import traceback
-                log = os.path.join(os.environ.get('TEMP', ''), 'WinCtlPanel3-ball.log')
-                with open(log, 'a', encoding='utf-8') as f:
-                    f.write('=== %s ===\n' % time.strftime('%Y-%m-%d %H:%M:%S'))
-                    traceback.print_exc(file=f)
-            except Exception:
-                pass
+            _ball_log_exc('ball-thread')
 
     def _run_inner(self):
         # 本线程全程物理像素：避开未感知进程的 DPI 虚拟化（否则 ULW 物理尺寸 vs 光标逻辑坐标错位）
@@ -986,7 +994,7 @@ class BallHost:
         if not user32.RegisterClassW(ctypes.byref(wc)):
             return
         self.panel_hwnd = user32.CreateWindowExW(
-            0x00000008 | 0x00000080,  # TOPMOST | TOOLWINDOW
+            0x00080000 | 0x00000008 | 0x00000080,  # LAYERED | TOPMOST | TOOLWINDOW
             wc.lpszClassName, '', 0x80000000,  # POPUP（隐藏创建）
             0, 0, 10, 10, None, None, hinst, None)
         if not self.panel_hwnd:
@@ -1104,22 +1112,29 @@ class BallHost:
                                          self._panel_pad * 2 + self._panel_row_h * max(len(self._rows), 1))
                     user32.FillRect(hdc, ctypes.byref(full), bg)
                     gdi32.DeleteObject(bg)
+                except Exception:
+                    _ball_log_exc('panel-paint-bg')
+                try:
                     user32.SetBkMode(hdc, TRANSPARENT_BK)
-                    old = gdi32.SelectObject(hdc, self._panel_font)
+                    if self._panel_font:
+                        gdi32.SelectObject(hdc, self._panel_font)
                     for i, (fid, label) in enumerate(self._rows):
-                        y = self._panel_pad + i * self._panel_row_h
-                        if i == self._hover_row:
-                            hb = gdi32.CreateSolidBrush(self.PANEL_HOVER)
-                            hr = wintypes.RECT(2, y, self._panel_w - 2, y + self._panel_row_h)
-                            user32.FillRect(hdc, ctypes.byref(hr), hb)
-                            gdi32.DeleteObject(hb)
-                        gdi32.SetTextColor(hdc, self.PANEL_TEXT)
-                        tr = wintypes.RECT(self._panel_pad, y,
-                                           self._panel_w - self._panel_pad, y + self._panel_row_h)
-                        gdi32.DrawTextW(hdc, label, -1, ctypes.byref(tr), DT_SINGLELINE | DT_VCENTER)
-                    gdi32.SelectObject(hdc, old)
-                finally:
-                    user32.EndPaint(hwnd, ctypes.byref(ps))
+                        try:
+                            y = self._panel_pad + i * self._panel_row_h
+                            if i == self._hover_row:
+                                hb = gdi32.CreateSolidBrush(self.PANEL_HOVER)
+                                hr = wintypes.RECT(2, y, self._panel_w - 2, y + self._panel_row_h)
+                                user32.FillRect(hdc, ctypes.byref(hr), hb)
+                                gdi32.DeleteObject(hb)
+                            gdi32.SetTextColor(hdc, self.PANEL_TEXT)
+                            tr = wintypes.RECT(self._panel_pad, y,
+                                               self._panel_w - self._panel_pad, y + self._panel_row_h)
+                            user32.DrawTextW(hdc, label, -1, ctypes.byref(tr), DT_SINGLELINE | DT_VCENTER)
+                        except Exception:
+                            _ball_log_exc('panel-paint-row-%d' % i)
+                except Exception:
+                    _ball_log_exc('panel-paint-text')
+                user32.EndPaint(hwnd, ctypes.byref(ps))
                 return 0
             if msg == WM_DESTROY:
                 self.panel_hwnd = 0
