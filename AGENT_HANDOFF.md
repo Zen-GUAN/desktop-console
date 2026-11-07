@@ -1,7 +1,7 @@
 # 桌面控制台 · 交接文档（AGENT_HANDOFF）
 
 > 最后更新：2026-11-07
-> 状态：**独立 exe 已完成（2026-11-07，路线 A）**：`v3-exe\dist\桌面控制台.exe`（16.1MB 单文件，后端全实测通过，UI 层复验待做），同日新增 **360 式悬浮球**（功能自选，见 `v3-exe\README.md`）+ 悬浮球设置 API（主面板设置页的任务书已交 Kimi：`docs\任务书_悬浮球设置页.md`）+ 通用性加固（WebView2 预检/换机诊断）。v1/v2 保留为回退，v2 兼作 v3 的 UI 源。git 仓库已初始化，待传 GitHub。
+> 状态：**v3 完整交付并经用户实测通过（2026-11-07）**：`v3-exe\dist\桌面控制台.exe`（16.2MB 单文件）——360 式悬浮球（morph 动画/亮度滑块/可拖动/功能自选设置页）、无边框主窗（去原生标题栏）、窗口几何记忆、**开机自启（HKCU Run + --minimized，托盘可开关）**、通用性加固（WebView2 预检/换机诊断 15 项）。已开源：github.com/Zen-GUAN/desktop-console（MIT，Release 带 exe）。v1/v2 保留为回退，v2 兼作 v3 的 UI 源。
 > exe 的构建/使用/已知说明见 `v3-exe\README.md`；§5 保留打包路线的原始论证（路线 A 已实施）。
 
 ---
@@ -19,7 +19,7 @@ Windows 11 **未激活**，所以「设置 → 个性化」整类被锁（背景
 | 任务栏对齐 | ✓ | ✓ |
 | 桌面壁纸 | ✓ | ✓ |
 | 一键还原（备份回滚） | ✓ | ✓ |
-| 屏幕亮度 DDC/CI | ✓ | ✓（2026-11-07 修复，UI 待复验） |
+| 屏幕亮度 DDC/CI | ✓ | ✓（2026-11-07 修复，用户实测通过） |
 
 **v1 丑但全通；v2 好看，亮度 bug 已修（根因在后端，见 §六 bug 1），两版并存现为回退与现行关系。**
 
@@ -189,7 +189,7 @@ npm i -D electron electron-builder
 
 - [x] 图标：`v3-exe\icon.ico`（`gen_icon.py` 纯代码复刻前端 favicon，多尺寸）
 - [x] 版本信息：`v3-exe\version_info.txt`（产品名「桌面控制台」、版本 3.0.0.0）
-- [ ] 启动位置：开机自启走 Startup 文件夹还是注册表 Run？（参考 `yuancheng` 项目用 Startup + VBS 的方案，已验证能活）——**未做，待用户决定**
+- [x] **开机自启**：HKCU `...\CurrentVersion\Run` 键 + `--minimized`（开机静默：仅球+托盘）；托盘菜单「开机自启」随时开关。未走 Startup+VBS——exe 无控制台无需 VBS，Run 键纯 winreg 读写可自服务开关
 - [x] **单实例**：互斥体 `Local\WinCtlPanel3_SingleInstance`（与 v2 的互斥体独立，两版可并存）
 - [x] **不要求管理员**：PyInstaller 默认 manifest 即 asInvoker；仅「锁屏图片」功能运行时按需弹 UAC（与 v1/v2 一致）
 - [x] 卸载/还原：备份共用 `%APPDATA%\WinCtlPanel\backup.json`，与 v2 互相兼容（v2 的 PowerShell 还原也能读 Python 写入的备份）

@@ -35,20 +35,21 @@ Windows 11 未激活，「设置 → 个性化」整类被锁 → 把 6 项功�
 - 窗口关闭后 server 进程不退（bug#2，UiTimer 的 `HasExited` 检测失效）——打包成同进程后自然消失，现形态暂不修。
 - `tools\brightness.ps1` 独立可用，不受任何版本 bug 影响。
 - **球线程坐标纪律**：`WM_MOUSEMOVE` 的 lparam 是**客户区坐标**（相对球左上角），拖动定位必须用 `GetCursorPos` 屏幕坐标——混用会导致球瞬移（2026-11-07 拖动手感异常的根因）；面板文本绘制注意 `DrawTextW` 在 user32，`SetBkMode`/`SetTextColor` 在 gdi32——**原型与调用点必须同侧**（这次劈叉只炸在冻结 GUI 路径，selftest 补了 panel-paint-apis + panel-paint-smoke 端到端冒烟拦住）；窗口斜向缩放用 `WM_SYSCOMMAND SC_SIZE|WMSZ_BOTTOMRIGHT`，别用合成的 WM_NCLBUTTONDOWN。
-- 诊断日志：`%TEMP%\WinCtlPanel2-diag.log`（每次启动追加显示器枚举与亮度探测结果）；球/面板异常落 `%TEMP%\WinCtlPanel3-ball.log`（用户报"没字/没反应"先看这个）。
+- **pywebview 退出/隐藏坑**：退出只投 `WM_CLOSE`，**勿与 `window.destroy()` 混用**（双关闭竞态 → on_close 重入 KeyError('master') → WinForms 错误框）；`hidden=True` + frameless 会让 WebView2 控制器初始化 E_ABORT（--minimized 用"正常创建 + loaded 后隐藏"绕开）；GUI 线程事件里的异常走 WinForms 自带错误框、不进 Python 日志（异常钩子 + stderr 重定向已落 `%TEMP%\WinCtlPanel3-stderr.log`）。
+- 诊断日志：`%TEMP%\WinCtlPanel2-diag.log`（每次启动追加显示器枚举与亮度探测结果）；球/面板异常落 `%TEMP%\WinCtlPanel3-ball.log`，全局异常落 `%TEMP%\WinCtlPanel3-stderr.log`（用户报"没字/没反应/报错"先看这三个）。
 
 ## 开源仓库（2026-11-07 上线）
 
-- **GitHub**：https://github.com/Zen-GUAN/desktop-console （公开，MIT License）
+- **GitHub**：https://github.com/Zen-GUAN/desktop-console （公开，MIT License；最新 3aea92d+，随文档提交持续推送）
 - Release：https://github.com/Zen-GUAN/desktop-console/releases/tag/v3.0.0 （含 `DesktopConsole-v3.0.0.exe`，16.1MB）
 - **坑：GitHub 资产名不支持非 ASCII**（中文上传会被归一成 default.exe，PATCH 中文名也无效）→ 发布二进制用 ASCII 名
 - 推送走 SSH 隧道代理（`_tools\proxy\proxy_on.ps1`，git 已配 github.com → 127.0.0.1:3128）
 
-## 下一步
+## 下一步（收工态：全部完成）
 
-1. **UI 层复验**：开一次 v3 面板，确认亮度滑杆可拖 + 悬浮球设置页观感（深浅主题/380px 布局/tab 顺序/真球菜单顺序与设置一致）；确认后把 AGENT_HANDOFF §一 的「UI 待复验」注记去掉。
-2. 可选：开机自启（Startup + VBS 方案，参考 `yuancheng` 项目）；代码签名。
-3. exe 打包清单的完成状态见 `AGENT_HANDOFF.md` §5.6。
+- ~~UI 层复验~~ ✓ 用户实测通过（2026-11-07）
+- ~~开机自启~~ ✓ HKCU Run + `--minimized` 静默启动，托盘可开关
+- 可选（未排期）：代码签名（消除 SmartScreen 提示）；morph 时长/面板配色手感参数微调
 
 ## 文件地图
 
