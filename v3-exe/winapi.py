@@ -181,9 +181,34 @@ def begin_title_drag(hwnd):
     user32.SendMessageW(hwnd, 0xA1, 2, 0)   # WM_NCLBUTTONDOWN, HTCAPTION
 
 def begin_resize(hwnd):
-    """右下角缩放：SC_SIZE|WMSZ_BOTTOMRIGHT 是规范入口（WM_NCLBUTTONDOWN 合成消息斜向跟踪不稳）。"""
-    user32.ReleaseCapture()
-    user32.SendMessageW(hwnd, 0x0112, 0xF008, 0)  # WM_SYSCOMMAND, SC_SIZE|WMSZ_BOTTOMRIGHT
+    """右下角缩放：异步轮询光标 + 左键状态，自己改窗口尺寸。
+
+    不依赖 mouse capture / 消息合成——WebView2 子进程在 pointerdown 后持有 capture，
+    任何合成消息的缩放循环都收不到鼠标移动（斜向失效的根因）。GetAsyncKeyState 读物理
+    按键状态，跨 capture 有效。
+    """
+    def worker():
+        try:
+            rect = wintypes.RECT()
+            if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return
+            start = wintypes.POINT()
+            user32.GetCursorPos(ctypes.byref(start))
+            start_w, start_h = rect.right - rect.left, rect.bottom - rect.top
+            deadline = time.time() + 15
+            while time.time() < deadline:
+                time.sleep(0.016)
+                if not user32.GetAsyncKeyState(0x01) & 0x8000:  # VK_LBUTTON 松开 → 结束
+                    break
+                pt = wintypes.POINT()
+                user32.GetCursorPos(ctypes.byref(pt))
+                new_w = max(340, start_w + (pt.x - start.x))
+                new_h = max(480, start_h + (pt.y - start.y))
+                user32.SetWindowPos(hwnd, None, 0, 0, int(new_w), int(new_h),
+                                    0x0002 | 0x0004 | 0x0010)  # SWP_NOMOVE|NOZORDER|NOACTIVATE
+        except Exception:
+            pass
+    threading.Thread(target=worker, name='winctl-resize', daemon=True).start()
 
 def apply_topmost(hwnd, on):
     if hwnd:
@@ -593,6 +618,10 @@ gdi32.SetTextColor.argtypes = [wintypes.HDC, wintypes.COLORREF]
 user32.FillRect.argtypes = [wintypes.HDC, ctypes.POINTER(wintypes.RECT), wintypes.HBRUSH]
 user32.FillRect.restype = ctypes.c_int
 user32.ScreenToClient.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
+gdi32.Ellipse.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+gdi32.Ellipse.restype = wintypes.BOOL
+user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+user32.GetAsyncKeyState.restype = ctypes.c_short
 
 ULW_ALPHA = 2
 AC_SRC_ALPHA = 1
@@ -690,11 +719,14 @@ class BallHost:
     TUCK_VISIBLE = 10      # 收起后露出的像素
     SNAP_THRESHOLD = 48    # 距边缘多少像素内吸附
 
-    def __init__(self, size=56, on_action=None, on_panel_rows=None, on_move_end=None):
+    def __init__(self, size=56, on_action=None, on_panel_rows=None, on_move_end=None,
+                 on_brightness=None, on_set_brightness=None):
         self.size = size              # 逻辑尺寸（56 逻辑像素 ≈ 360 悬浮球大小）
         self.on_action = on_action            # fn(fid) 面板行点击
         self.on_panel_rows = on_panel_rows    # fn() -> [(fid, label)] 面板行数据
         self.on_move_end = on_move_end
+        self.on_brightness = on_brightness        # fn() -> int|None 当前亮度百分比
+        self.on_set_brightness = on_set_brightness  # fn(pct) 设置全部显示器亮度
         self.hwnd = 0
         self.thread = None
         self._wndproc_ref = WNDPROC(self._dispatch)
@@ -718,6 +750,13 @@ class BallHost:
         self._panel_pad = 0
         self._panel_row_h = 0
         self._panel_w = 0
+        self._panel_h = 0
+        self._rows_y0 = 0
+        self._slider_y0 = 0
+        self._slider_y1 = 0
+        self._slider_pct = None      # None = 亮度不可用（无 DDC 显示器）
+        self._slider_drag = False
+        self._morph = None           # {'phase': 'out'|'in', 'from': (x,y,w,h), 'to': (x,y,w,h), 'step': n}
 
     # ---- lifecycle ----
     def start(self, x=None, y=None, tucked=True):
@@ -986,6 +1025,8 @@ class BallHost:
     PANEL_BG = 0x301D18        # RGB(24, 29, 48)
     PANEL_HOVER = 0x684238     # RGB(56, 66, 104)
     PANEL_TEXT = 0xF5E7E2      # RGB(226, 231, 245)
+    PANEL_TRACK = 0x56413A     # RGB(58, 65, 86)
+    PANEL_MINT = 0xC2DB87      # RGB(135, 219, 194)
 
     def _create_panel(self, hinst):
         wc = WNDCLASSW()
@@ -1023,46 +1064,82 @@ class BallHost:
         old = gdi32.SelectObject(hdc, self._panel_font)
         maxw = 0
         sz = _SIZE()
-        for _fid, label in self._rows:
+        texts = [label for _fid, label in self._rows]
+        if self._slider_pct is not None:
+            texts += ['亮度', '100%']
+        for label in texts:
             if gdi32.GetTextExtentPoint32W(hdc, label, len(label), ctypes.byref(sz)):
                 maxw = max(maxw, sz.cx)
         gdi32.SelectObject(hdc, old)
         user32.ReleaseDC(self.panel_hwnd, hdc)
         self._panel_w = maxw + self._panel_pad * 2 + int(round(16 * self.scale))
+        self._slider_y0 = self._panel_pad
+        self._rows_y0 = self._panel_pad
+        if self._slider_pct is not None:
+            text_h = int(round(18 * self.scale))
+            track_y = self._slider_y0 + text_h + int(round(4 * self.scale))
+            self._slider_track_y = track_y
+            self._slider_track_h = int(round(6 * self.scale))
+            self._slider_y1 = track_y + self._slider_track_h + int(round(8 * self.scale))
+            self._rows_y0 = self._slider_y1
+        self._panel_h = self._rows_y0 + self._panel_row_h * len(self._rows) + self._panel_pad
 
     def _show_panel(self):
-        if not self.panel_hwnd or self._panel_shown:
+        if not self.panel_hwnd or self._panel_shown or self._morph:
             return
         self._rows = self._panel_rows_now()
         self._hover_row = -1
+        self._slider_pct = self.on_brightness() if self.on_brightness else None
         self._panel_measure()
-        height = self._panel_pad * 2 + self._panel_row_h * len(self._rows)
         wa = _work_area((self._anchor[0] + self.size_phys / 2.0,
                          self._anchor[1] + self.size_phys / 2.0))
         gap = int(round(8 * self.scale))
         if wa and self._anchor[0] + self.size_phys // 2 > (wa.left + wa.right) // 2:
-            px = self._anchor[0] - self._panel_w - gap   # 球在右半屏 → 面板在左侧
+            tx = self._anchor[0] - self._panel_w - gap   # 球在右半屏 → 面板在左侧
         else:
-            px = self._anchor[0] + self.size_phys + gap
-        py = self._anchor[1] + self.size_phys // 2 - height // 2
+            tx = self._anchor[0] + self.size_phys + gap
+        ty = self._anchor[1] + self.size_phys // 2 - self._panel_h // 2
         if wa:
-            px = max(wa.left + 4, min(px, wa.right - self._panel_w - 4))
-            py = max(wa.top + 4, min(py, wa.bottom - height - 4))
-        rgn = gdi32.CreateRoundRectRgn(0, 0, self._panel_w + 1, height + 1,
+            tx = max(wa.left + 4, min(tx, wa.right - self._panel_w - 4))
+            ty = max(wa.top + 4, min(ty, wa.bottom - self._panel_h - 4))
+        # 球 morph 成面板：从球矩形长到面板矩形，动画期间球隐藏
+        self._morph = {'phase': 'out', 'step': 0,
+                       'from': (int(self._cur[0]), int(self._cur[1]), self.size_phys, self.size_phys),
+                       'to': (int(tx), int(ty), self._panel_w, self._panel_h)}
+        user32.ShowWindow(self.hwnd, 0)
+        self._apply_morph_frame()
+        self._panel_shown = True
+        user32.SetTimer(self.panel_hwnd, 1, 16, None)
+
+    def _apply_morph_frame(self):
+        m = self._morph
+        fx, fy, fw, fh = m['from']
+        tx, ty, tw, th = m['to']
+        t = min(1.0, m['step'] / 7.0)
+        ease = 1 - (1 - t) * (1 - t)
+        cx, cy = int(round(fx + (tx - fx) * ease)), int(round(fy + (ty - fy) * ease))
+        cw, ch = int(round(fw + (tw - fw) * ease)), int(round(fh + (th - fh) * ease))
+        m['cur'] = (cx, cy, cw, ch)
+        rgn = gdi32.CreateRoundRectRgn(0, 0, cw + 1, ch + 1,
                                        int(round(12 * self.scale)), int(round(12 * self.scale)))
         user32.SetWindowRgn(self.panel_hwnd, rgn, True)
-        user32.SetWindowPos(self.panel_hwnd, wintypes.HWND(-1), int(px), int(py),
-                            self._panel_w, height, SWP_NOACTIVATE | SWP_SHOWWINDOW)
-        self._panel_shown = True
+        user32.SetWindowPos(self.panel_hwnd, wintypes.HWND(-1), cx, cy, cw, ch,
+                            SWP_NOACTIVATE | SWP_SHOWWINDOW)
         user32.InvalidateRect(self.panel_hwnd, None, True)
 
     def _hide_panel(self):
-        if self.panel_hwnd and self._panel_shown:
-            user32.ShowWindow(self.panel_hwnd, 0)
-            self._panel_shown = False
+        if not self.panel_hwnd or not self._panel_shown or self._morph:
+            return
+        r = wintypes.RECT()
+        user32.GetWindowRect(self.panel_hwnd, ctypes.byref(r))
+        # 面板缩回成球，动画结束后球重新出现
+        self._morph = {'phase': 'in', 'step': 0,
+                       'from': (r.left, r.top, r.right - r.left, r.bottom - r.top),
+                       'to': (int(self._cur[0]), int(self._cur[1]), self.size_phys, self.size_phys)}
+        user32.SetTimer(self.panel_hwnd, 1, 16, None)
 
     def _toggle_panel(self):
-        if self._panel_shown:
+        if self._panel_shown or self._morph:
             self._hide_panel()
         else:
             self._show_panel()
@@ -1076,30 +1153,75 @@ class BallHost:
                     return True
         return False
 
+    def _apply_slider_x(self, client_x):
+        x0 = self._panel_pad
+        x1 = self._panel_w - self._panel_pad
+        if x1 <= x0 or self._slider_pct is None:
+            return
+        pct = int(round(max(0.0, min(1.0, (client_x - x0) / float(x1 - x0))) * 100))
+        if pct != self._slider_pct:
+            self._slider_pct = pct
+            user32.InvalidateRect(self.panel_hwnd, None, True)
+            if self.on_set_brightness is not None:
+                try:
+                    self.on_set_brightness(pct)
+                except Exception:
+                    pass
+
     def _panel_dispatch(self, hwnd, msg, wparam, lparam):
         try:
+            if msg == WM_TIMER and int(wparam) == 1:  # morph 动画帧
+                m = self._morph
+                if not m:
+                    user32.KillTimer(hwnd, 1)
+                    return 0
+                m['step'] += 1
+                self._apply_morph_frame()
+                if m['step'] >= 7:
+                    user32.KillTimer(hwnd, 1)
+                    if m['phase'] == 'in':
+                        user32.ShowWindow(self.panel_hwnd, 0)
+                        self._panel_shown = False
+                        self._apply()  # 球在原位重新出现（含置顶）
+                    self._morph = None
+                return 0
             if msg == WM_LBUTTONDOWN:
                 pt = wintypes.POINT()
                 user32.GetCursorPos(ctypes.byref(pt))
                 user32.ScreenToClient(hwnd, ctypes.byref(pt))
-                row = (pt.y - self._panel_pad) // self._panel_row_h
+                if self._slider_pct is not None and self._slider_y0 <= pt.y <= self._slider_y1:
+                    self._slider_drag = True
+                    user32.SetCapture(hwnd)
+                    self._apply_slider_x(pt.x)
+                    return 0
+                row = (pt.y - self._rows_y0) // self._panel_row_h
                 if 0 <= row < len(self._rows):
                     fid = self._rows[row][0]
                     self._hide_panel()
                     if fid and self.on_action is not None:
                         self.on_action(fid)
+                    return 0
+                self._hide_panel()  # 点空白收起
                 return 0
-            if msg == 0x0200:  # WM_MOUSEMOVE：悬停行高亮
+            if msg == 0x0200:  # WM_MOUSEMOVE：滑块拖动 / 行高亮
                 tme = TRACKMOUSEEVENT(ctypes.sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd, 0)
                 user32.TrackMouseEvent(ctypes.byref(tme))
                 pt = wintypes.POINT()
                 user32.GetCursorPos(ctypes.byref(pt))
                 user32.ScreenToClient(hwnd, ctypes.byref(pt))
-                row = (pt.y - self._panel_pad) // self._panel_row_h
+                if self._slider_drag:
+                    self._apply_slider_x(pt.x)
+                    return 0
+                row = (pt.y - self._rows_y0) // self._panel_row_h
                 row = row if 0 <= row < len(self._rows) else -1
                 if row != self._hover_row:
                     self._hover_row = row
                     user32.InvalidateRect(hwnd, None, True)
+                return 0
+            if msg == 0x0202:  # WM_LBUTTONUP
+                if self._slider_drag:
+                    self._slider_drag = False
+                    user32.ReleaseCapture()
                 return 0
             if msg == WM_MOUSELEAVE:
                 user32.SetTimer(self.hwnd, 2, 350, None)  # 移回球上则不收起
@@ -1109,8 +1231,7 @@ class BallHost:
                 hdc = user32.BeginPaint(hwnd, ctypes.byref(ps))
                 try:
                     bg = gdi32.CreateSolidBrush(self.PANEL_BG)
-                    full = wintypes.RECT(0, 0, self._panel_w,
-                                         self._panel_pad * 2 + self._panel_row_h * max(len(self._rows), 1))
+                    full = wintypes.RECT(0, 0, self._panel_w, max(self._panel_h, 10))
                     user32.FillRect(hdc, ctypes.byref(full), bg)
                     gdi32.DeleteObject(bg)
                 except Exception:
@@ -1119,9 +1240,45 @@ class BallHost:
                     gdi32.SetBkMode(hdc, TRANSPARENT_BK)
                     if self._panel_font:
                         gdi32.SelectObject(hdc, self._panel_font)
+                    # 亮度滑块（无 DDC 时 _slider_pct 为 None 跳过）
+                    if self._slider_pct is not None:
+                        try:
+                            gdi32.SetTextColor(hdc, self.PANEL_TEXT)
+                            lt = wintypes.RECT(self._panel_pad, self._slider_y0,
+                                               self._panel_w // 2, self._slider_y0 + int(round(18 * self.scale)))
+                            user32.DrawTextW(hdc, '亮度', -1, ctypes.byref(lt), DT_SINGLELINE | DT_VCENTER)
+                            pt2 = wintypes.RECT(self._panel_w // 2, self._slider_y0,
+                                                self._panel_w - self._panel_pad,
+                                                self._slider_y0 + int(round(18 * self.scale)))
+                            user32.DrawTextW(hdc, '%d%%' % self._slider_pct, -1, ctypes.byref(pt2),
+                                             DT_SINGLELINE | DT_VCENTER | 0x2)  # DT_RIGHT
+                            ty = self._slider_track_y
+                            th = self._slider_track_h
+                            x0 = self._panel_pad
+                            x1 = self._panel_w - self._panel_pad
+                            track_br = gdi32.CreateSolidBrush(self.PANEL_TRACK)
+                            tr_full = wintypes.RECT(x0, ty, x1, ty + th)
+                            user32.FillRect(hdc, ctypes.byref(tr_full), track_br)
+                            gdi32.DeleteObject(track_br)
+                            fill_w = int(round((x1 - x0) * self._slider_pct / 100.0))
+                            if fill_w > 0:
+                                fill_br = gdi32.CreateSolidBrush(self.PANEL_MINT)
+                                tr_fill = wintypes.RECT(x0, ty, x0 + fill_w, ty + th)
+                                user32.FillRect(hdc, ctypes.byref(tr_fill), fill_br)
+                                gdi32.DeleteObject(fill_br)
+                            thumb_br = gdi32.CreateSolidBrush(0xFFFFFF)
+                            old_br = gdi32.SelectObject(hdc, thumb_br)
+                            cx = x0 + fill_w
+                            cy = ty + th // 2
+                            r = int(round(7 * self.scale))
+                            gdi32.Ellipse(hdc, cx - r, cy - r, cx + r, cy + r)
+                            gdi32.SelectObject(hdc, old_br)
+                            gdi32.DeleteObject(thumb_br)
+                        except Exception:
+                            _ball_log_exc('panel-paint-slider')
                     for i, (fid, label) in enumerate(self._rows):
                         try:
-                            y = self._panel_pad + i * self._panel_row_h
+                            y = self._rows_y0 + i * self._panel_row_h
                             if i == self._hover_row:
                                 hb = gdi32.CreateSolidBrush(self.PANEL_HOVER)
                                 hr = wintypes.RECT(2, y, self._panel_w - 2, y + self._panel_row_h)

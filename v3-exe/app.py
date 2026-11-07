@@ -373,6 +373,29 @@ def do_wallpaper_restore():
     winapi.broadcast_settings(None)
 
 
+def set_all_brightness(pct):
+    """亮度滑块：按各自 min/max 把全部显示器设到目标百分比；返回实际值。"""
+    pct = max(0, min(100, int(pct)))
+    for i, (handle, _desc) in enumerate(monitor_list()):
+        info = winapi.get_brightness(handle)
+        if info is None:
+            continue
+        mn, cur, mx = (int(v) for v in info)
+        span = mx - mn
+        raw = mn + (int(round(pct * span / 100.0)) if span > 0 else 0)
+        BACKUP.add('bright:%d' % i, '%d;%d;%d' % (mn, cur, mx))
+        winapi.set_brightness(handle, raw)
+    return pct
+
+
+def current_brightness():
+    """球面板滑块的当前值：取显示器 0 的百分比；无 DDC 返回 None。"""
+    st = monitor_state()
+    if st and st[0]['supported']:
+        return int(st[0]['percent'])
+    return None
+
+
 def ball_config_payload():
     """悬浮球设置的完整 payload（GET 响应 / POST 保存后的回执）。"""
     return {'ok': True, 'enabled': BALL['enabled'], 'functions': list(BALL['functions']),
@@ -1059,7 +1082,9 @@ class GuiHost:
         self.ball = winapi.BallHost(size=56,
                                     on_action=ball_action,
                                     on_panel_rows=self._panel_rows,
-                                    on_move_end=self._ball_moved)
+                                    on_move_end=self._ball_moved,
+                                    on_brightness=current_brightness,
+                                    on_set_brightness=set_all_brightness)
         self.ball.start(BALL['x'], BALL['y'], tucked=BALL['tucked'])
 
     def _ball_moved(self, x, y, tucked):
