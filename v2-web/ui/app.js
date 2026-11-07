@@ -3,7 +3,7 @@
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const token = document.querySelector('meta[name="winctl-token"]').content;
-const state = { monitors: [], monitorIndex: 0, dark: true, accent: '', taskbar: 1, topmost: false, backup: false, wallpaper: '', rotation: false, connected: false };
+const state = { monitors: [], monitorIndex: 0, dark: true, accent: '', taskbar: 1, topmost: false, backup: false, wallpaper: '', rotation: false, connected: false, ball: null };
 let brightnessTimer = 0;
 let brightnessSequence = 0;
 let pendingBrightness = null;
@@ -13,6 +13,12 @@ let statusTimer = 0;
 let previewUrl = '';
 let confirmAction = null;
 let reconnectTimer = 0;
+let ballConfig = null;
+let ballDraft = null;
+let ballLoading = false;
+let ballSaving = false;
+let ballRevision = 0;
+const ballPendingSaves = [];
 
 async function api(path, options = {}) {
   const config = { method: options.method || 'GET', headers: { 'X-WinCtl-Token': token, ...(options.headers || {}) }, cache: 'no-store' };
@@ -170,6 +176,11 @@ async function updateWallpaperPreview(path) {
 
 function renderState(next) {
   if (!next) return;
+  if (Object.prototype.hasOwnProperty.call(next, 'ball')) {
+    state.ball = next.ball && typeof next.ball === 'object' ? next.ball : null;
+    $('#ball-settings-button').hidden = !state.ball;
+    if (!state.ball && $('#ball-dialog').open) $('#ball-dialog').close();
+  }
   if (Array.isArray(next.monitors)) renderMonitors(next.monitors);
   if (next.dark !== undefined) setThemeUI(next.dark);
   if (next.accent) setAccentUI(next.accent);
@@ -193,6 +204,231 @@ function renderState(next) {
     const ok = next.hotkeys.brightnessUp && next.hotkeys.brightnessDown && next.hotkeys.theme;
     $('#hotkey-status').textContent = ok ? '热键已注册，可在其他窗口直接使用。' : '部分热键被其他程序占用，面板内功能不受影响。';
   }
+}
+
+function normalizeBallConfig(payload) {
+  const available = Array.isArray(payload.available)
+    ? payload.available.filter(item => item && typeof item.id === 'string').map(item => ({ id: item.id, label: String(item.label ?? item.id) }))
+    : [];
+  return {
+    enabled: !!payload.enabled,
+    functions: Array.isArray(payload.functions) ? [...payload.functions] : [],
+    available
+  };
+}
+
+function cloneBallConfig(config) {
+  return { enabled: config.enabled, functions: [...config.functions], available: config.available.map(item => ({ ...item })) };
+}
+
+function syncBallCapabilityFromConfig() {
+  if (!ballConfig) return;
+  state.ball = { ...(state.ball || {}), enabled: ballConfig.enabled, functions: [...ballConfig.functions] };
+  $('#ball-settings-button').hidden = false;
+}
+
+function updateBallSaveState() {
+  const saving = ballSaving || ballPendingSaves.length > 0;
+  $('#ball-save-state').textContent = saving ? '正在保存…' : '更改即时保存';
+  $('#ball-save-state').classList.toggle('saving', saving);
+}
+
+function renderBallFunctions() {
+  const list = $('#ball-function-list');
+  const active = document.activeElement;
+  const focus = active && list.contains(active) ? { id: active.dataset.ballId, action: active.dataset.ballAction } : null;
+  list.replaceChildren();
+  if (ballLoading || !ballDraft) {
+    const loading = document.createElement('p');
+    loading.className = 'ball-loading';
+    loading.textContent = ballLoading ? '正在读取悬浮球设置…' : '暂无可配置功能';
+    list.append(loading);
+    return;
+  }
+  if (!ballDraft.available.length) {
+    const empty = document.createElement('p');
+    empty.className = 'ball-loading';
+    empty.textContent = '暂无可配置功能';
+    list.append(empty);
+    return;
+  }
+
+  ballDraft.available.forEach(item => {
+    const selectedIndex = ballDraft.functions.indexOf(item.id);
+    const row = document.createElement('div');
+    row.className = 'ball-function';
+    row.classList.toggle('selected', selectedIndex >= 0);
+
+    const label = document.createElement('label');
+    label.className = 'ball-check';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = selectedIndex >= 0;
+    checkbox.dataset.ballId = item.id;
+    checkbox.dataset.ballAction = 'check';
+    checkbox.addEventListener('change', event => toggleBallFunction(item.id, event.target.checked));
+    const box = document.createElement('span');
+    box.className = 'ball-check-box';
+    box.innerHTML = '<svg aria-hidden="true"><use href="#i-check"></use></svg>';
+    const text = document.createElement('span');
+    text.className = 'ball-check-label';
+    text.textContent = item.label;
+    label.append(checkbox, box, text);
+    row.append(label);
+
+    if (selectedIndex >= 0) {
+      const order = document.createElement('span');
+      order.className = 'ball-order';
+      const number = document.createElement('span');
+      number.className = 'ball-order-number';
+      number.textContent = String(selectedIndex + 1);
+      number.title = `菜单顺序 ${selectedIndex + 1}`;
+      order.append(number);
+      ['up', 'down'].forEach(direction => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `ball-order-button ${direction}`;
+        button.dataset.ballId = item.id;
+        button.dataset.ballAction = direction;
+        button.disabled = direction === 'up' ? selectedIndex === 0 : selectedIndex === ballDraft.functions.length - 1;
+        const actionLabel = direction === 'up' ? '上移' : '下移';
+        button.title = `${actionLabel}「${item.label}」`;
+        button.setAttribute('aria-label', `${actionLabel}「${item.label}」`);
+        button.innerHTML = '<svg aria-hidden="true"><use href="#i-chevron"></use></svg>';
+        button.addEventListener('click', () => moveBallFunction(item.id, direction));
+        order.append(button);
+      });
+      row.append(order);
+    }
+    list.append(row);
+  });
+
+  if (focus && $('#ball-dialog').open) {
+    const controls = $$('#ball-function-list [data-ball-id]');
+    const sameId = controls.filter(control => control.dataset.ballId === focus.id);
+    const target = sameId.find(control => control.dataset.ballAction === focus.action && !control.disabled)
+      || sameId.find(control => ['up', 'down'].includes(control.dataset.ballAction) && !control.disabled)
+      || sameId.find(control => control.dataset.ballAction === 'check');
+    if (target) target.focus();
+  }
+}
+
+function renderBallSettings() {
+  const ready = !ballLoading && !!ballDraft;
+  const functions = ready ? ballDraft.functions : [];
+  $('#ball-enabled').disabled = !ready;
+  $('#ball-enabled').setAttribute('aria-checked', String(ready && ballDraft.enabled));
+  $('#ball-selection-count').textContent = ready ? `${functions.length} / ${ballDraft.available.length} 项` : '正在读取…';
+  $('#ball-empty-hint').hidden = !ready || functions.length > 0;
+  renderBallFunctions();
+
+  const preview = $('#ball-preview-list');
+  preview.replaceChildren();
+  if (ready) {
+    const labels = new Map(ballDraft.available.map(item => [item.id, item.label]));
+    functions.forEach(id => {
+      const item = document.createElement('li');
+      item.textContent = labels.get(id) || id;
+      preview.append(item);
+    });
+  }
+  $('#ball-preview-empty').hidden = !ready || functions.length > 0;
+  updateBallSaveState();
+}
+
+function commitBallChange(change) {
+  if (!ballDraft || ballLoading) return;
+  $('#ball-save-error').hidden = true;
+  change(ballDraft);
+  ballRevision += 1;
+  renderBallSettings();
+  ballPendingSaves.push({
+    revision: ballRevision,
+    payload: { enabled: ballDraft.enabled, functions: [...ballDraft.functions] }
+  });
+  updateBallSaveState();
+  processBallSaves();
+}
+
+function toggleBallFunction(id, enabled) {
+  commitBallChange(draft => {
+    const index = draft.functions.indexOf(id);
+    if (enabled && index < 0) draft.functions.push(id);
+    if (!enabled && index >= 0) draft.functions.splice(index, 1);
+  });
+}
+
+function moveBallFunction(id, direction) {
+  commitBallChange(draft => {
+    const index = draft.functions.indexOf(id);
+    const target = direction === 'up' ? index - 1 : index + 1;
+    if (index < 0 || target < 0 || target >= draft.functions.length) return;
+    [draft.functions[index], draft.functions[target]] = [draft.functions[target], draft.functions[index]];
+  });
+}
+
+async function processBallSaves() {
+  if (ballSaving) return;
+  ballSaving = true;
+  updateBallSaveState();
+  while (ballPendingSaves.length) {
+    const request = ballPendingSaves.shift();
+    setBusy(true, '正在保存悬浮球设置…');
+    try {
+      const next = await api('ball/config', { method: 'POST', body: request.payload });
+      ballConfig = normalizeBallConfig(next);
+      syncBallCapabilityFromConfig();
+      if (request.revision === ballRevision) {
+        ballDraft = cloneBallConfig(ballConfig);
+        renderBallSettings();
+      }
+      if (!ballPendingSaves.length && request.revision === ballRevision) setStatus('悬浮球设置已保存', 'normal');
+    } catch (error) {
+      ballPendingSaves.length = 0;
+      ballRevision += 1;
+      if (ballConfig) {
+        ballDraft = cloneBallConfig(ballConfig);
+        syncBallCapabilityFromConfig();
+        renderBallSettings();
+      }
+      const message = error.message || '操作失败，请稍后重试。';
+      $('#ball-save-error').textContent = `保存失败，已回滚：${message}`;
+      $('#ball-save-error').hidden = false;
+      friendlyError(error);
+      break;
+    }
+  }
+  ballSaving = false;
+  updateBallSaveState();
+}
+
+async function loadBallConfig() {
+  if (!state.ball || ballLoading || ballSaving || ballPendingSaves.length) return;
+  ballLoading = true;
+  ballDraft = null;
+  $('#ball-save-error').hidden = true;
+  renderBallSettings();
+  try {
+    const next = await api('ball/config');
+    ballConfig = normalizeBallConfig(next);
+    ballDraft = cloneBallConfig(ballConfig);
+    syncBallCapabilityFromConfig();
+  } catch (error) {
+    if ($('#ball-dialog').open) $('#ball-dialog').close();
+    friendlyError(error);
+  } finally {
+    ballLoading = false;
+    renderBallSettings();
+  }
+}
+
+function openBallSettings() {
+  if (!state.ball) return;
+  const dialog = $('#ball-dialog');
+  if (!dialog.open) dialog.showModal();
+  document.body.classList.add('modal-open');
+  if (ballSaving || ballPendingSaves.length) { renderBallSettings(); return; }
+  loadBallConfig();
 }
 
 async function refreshState(showBusy = false) {
@@ -375,6 +611,11 @@ $('#resize-grip').addEventListener('pointerdown', event => {
 });
 
 $('#advanced-button').addEventListener('click', () => { $('#advanced-dialog').showModal(); document.body.classList.add('modal-open'); });
+$('#ball-settings-button').addEventListener('click', openBallSettings);
+$('#ball-enabled').addEventListener('click', () => commitBallChange(draft => { draft.enabled = !draft.enabled; }));
+$('#ball-dialog').addEventListener('close', () => {
+  if (!document.querySelector('dialog[open]')) document.body.classList.remove('modal-open');
+});
 $$('[data-close-dialog]').forEach(button => button.addEventListener('click', () => $(`#${button.dataset.closeDialog}`).close()));
 $('#advanced-dialog').addEventListener('close', () => document.body.classList.remove('modal-open'));
 $$('dialog').forEach(dialog => dialog.addEventListener('click', event => {

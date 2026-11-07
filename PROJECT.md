@@ -38,8 +38,8 @@ Windows 11 未激活，「设置 → 个性化」整类被锁 → 把 6 项功�
 
 ## 下一步
 
-1. **Kimi 执行悬浮球设置页**：任务书已出（`docs\任务书_悬浮球设置页.md`，2026-11-07）——可视化勾选+排序；后端契约（`GET/POST /api/ball/config` + `state.ball` 能力检测）已实现并实测。Kimi 交稿后由 ZCode 重打包验收。
-2. **UI 层复验**：开一次 v3（或 v2）面板，确认亮度滑杆可拖、数值正常；确认后把 AGENT_HANDOFF §一 表格的「UI 待复验」注记去掉。
+1. ~~Kimi 执行悬浮球设置页~~ **已完成并通过 ZCode 验收**（2026-11-07，`v3-exe\verify_ball_settings.py` headless 16/16：能力检测双向/勾选排序即时保存/预览同步/断连回滚/v2 零请求；exe 已重打包）。仅剩肉眼项：深浅主题观感、380px 布局、tab 顺序、真球菜单顺序核对。
+2. **UI 层复验**：开一次 v3 面板，确认亮度滑杆可拖；确认后把 AGENT_HANDOFF §一 的「UI 待复验」注记去掉。
 3. **上传 GitHub**：仓库已初始化（main 分支），用户建远程后 `git remote add origin <url> && git push -u origin main`；exe 用 GitHub Release 发；LICENSE 待用户定。
 4. 可选：开机自启（Startup + VBS 方案，参考 `yuancheng` 项目）；代码签名。
 5. exe 打包清单的完成状态见 `AGENT_HANDOFF.md` §5.6。

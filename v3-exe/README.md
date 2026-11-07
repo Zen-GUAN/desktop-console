@@ -70,7 +70,8 @@ python app.py --no-window --port 18779   # 无窗口模式，curl 调 API
 
 ```
 app.py             HTTP 服务 + 全部 API 处理器 + 状态组装 + main（后端核心）
-winapi.py          ctypes 绑定：DDC/CI、壁纸、注册表、托盘、热键、对话框、提权
+winapi.py          ctypes 绑定：DDC/CI、壁纸、注册表、托盘、热键、对话框、提权、悬浮球
+verify_ball_settings.py  悬浮球设置页 headless 验收（playwright + 系统 Edge，自起自停后端，零窗口）
 gen_icon.py        生成 icon.ico（纯 stdlib 画素）
 version_info.txt   PyInstaller 版本资源（产品名/版本号）
 build.py           一键构建（装依赖 → 图标 → PyInstaller）

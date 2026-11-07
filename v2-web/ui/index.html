@@ -28,6 +28,7 @@
     <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
     <symbol id="i-restore" viewBox="0 0 24 24"><path d="M4 8V3m0 5h5M4.7 8A8.5 8.5 0 1 1 4 15"/></symbol>
     <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h4M12 7h8M4 17h8M16 17h4"/><circle cx="10" cy="7" r="2"/><circle cx="14" cy="17" r="2"/></symbol>
+    <symbol id="i-ball" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M8 9h8M8 12h5M8 15h8"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path d="m6 12 4 4 8-9"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
     <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></symbol>
@@ -124,6 +125,7 @@
     <div class="sheet-header"><div><p class="eyebrow">MORE TOOLS</p><h2 id="advanced-title">更多工具</h2></div><button class="window-button" data-close-dialog="advanced-dialog" aria-label="关闭更多工具"><svg><use href="#i-close"></use></svg></button></div>
     <p class="sheet-description">保留原版的进阶能力，按需使用。</p>
     <div class="tool-list">
+      <button id="ball-settings-button" hidden><span class="tool-icon"><svg><use href="#i-ball"></use></svg></span><span><strong>悬浮球设置</strong><small>自选菜单功能并调整弹出顺序</small></span><svg class="tool-chevron"><use href="#i-chevron"></use></svg></button>
       <button id="rotate-button"><span class="tool-icon"><svg><use href="#i-folder"></use></svg></span><span><strong>壁纸轮换</strong><small id="rotate-detail">选择文件夹，每 10 分钟随机更换</small></span><span class="tool-value" id="rotate-value">关闭</span></button>
       <button id="wallpaper-restore-button"><span class="tool-icon"><svg><use href="#i-image"></use></svg></span><span><strong>仅还原壁纸</strong><small>不影响其他个性化设置</small></span><svg class="tool-chevron"><use href="#i-chevron"></use></svg></button>
       <button id="theme-file-button"><span class="tool-icon"><svg><use href="#i-theme"></use></svg></span><span><strong>应用 .theme 主题</strong><small>调用 Windows 主题引擎 · 实验性</small></span><svg class="tool-chevron"><use href="#i-chevron"></use></svg></button>
@@ -131,6 +133,24 @@
       <button id="explorer-button"><span class="tool-icon"><svg><use href="#i-restart"></use></svg></span><span><strong>重启资源管理器</strong><small>任务栏对齐未刷新时使用</small></span><svg class="tool-chevron"><use href="#i-chevron"></use></svg></button>
     </div>
     <div class="shortcut-note"><svg><use href="#i-info"></use></svg><div><strong>全局快捷键</strong><p>Ctrl + Alt + ↑ / ↓ 调节亮度<br>Ctrl + Alt + D 切换深浅色</p><small id="hotkey-status">正在检查热键状态…</small></div></div>
+  </dialog>
+
+  <dialog class="sheet ball-dialog" id="ball-dialog" aria-labelledby="ball-title">
+    <div class="sheet-header"><div><p class="eyebrow">FLOATING BALL</p><h2 id="ball-title">悬浮球设置</h2></div><button class="window-button" data-close-dialog="ball-dialog" aria-label="关闭悬浮球设置"><svg><use href="#i-close"></use></svg></button></div>
+    <p class="sheet-description">勾选常用功能，用上移、下移按钮调整球菜单顺序。</p>
+    <div class="ball-enable-row">
+      <span class="ball-enable-copy"><strong>启用悬浮球</strong><small>关闭后立即隐藏，功能清单会保留</small></span>
+      <button class="ball-switch" id="ball-enabled" type="button" role="switch" aria-checked="false" aria-label="启用悬浮球" disabled><span></span></button>
+    </div>
+    <p class="ball-save-error" id="ball-save-error" role="alert" hidden></p>
+    <div class="ball-section-heading"><h3>菜单功能</h3><span id="ball-selection-count">正在读取…</span></div>
+    <div class="ball-function-list" id="ball-function-list" role="group" aria-label="悬浮球菜单功能"></div>
+    <p class="ball-empty-hint" id="ball-empty-hint" hidden>未选择功能时，球菜单仅显示「未选择功能」提示。</p>
+    <section class="ball-preview" aria-labelledby="ball-preview-title">
+      <div class="ball-preview-heading"><h3 id="ball-preview-title">球菜单预览</h3><span class="instant-label" id="ball-save-state">更改即时保存</span></div>
+      <ol id="ball-preview-list"></ol>
+      <p class="ball-preview-empty" id="ball-preview-empty" hidden>未选择功能</p>
+    </section>
   </dialog>
 
   <dialog class="confirm-dialog" id="confirm-dialog" aria-labelledby="confirm-title">
