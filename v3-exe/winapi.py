@@ -293,6 +293,7 @@ class TrayHost:
         wc = WNDCLASSW()
         wc.lpfnWndProc = self._wndproc_ref
         wc.hInstance = hinst
+        wc.hCursor = user32.LoadCursorW(None, IDC_ARROW)
         wc.lpszClassName = 'WinCtlPanel3Tray'
         if not user32.RegisterClassW(ctypes.byref(wc)):
             return
@@ -622,6 +623,8 @@ gdi32.Ellipse.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int
 gdi32.Ellipse.restype = wintypes.BOOL
 user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
 user32.GetAsyncKeyState.restype = ctypes.c_short
+user32.LoadCursorW.restype = wintypes.HANDLE
+IDC_ARROW = 32512  # MAKEINTRESOURCE
 
 ULW_ALPHA = 2
 AC_SRC_ALPHA = 1
@@ -757,6 +760,7 @@ class BallHost:
         self._slider_pct = None      # None = 亮度不可用（无 DDC 显示器）
         self._slider_drag = False
         self._morph = None           # {'phase': 'out'|'in', 'from': (x,y,w,h), 'to': (x,y,w,h), 'step': n}
+        self._hover_suppress = False  # 面板缩回后光标恰在球上：等离开再允许悬停弹出（防拍抖）
 
     # ---- lifecycle ----
     def start(self, x=None, y=None, tucked=True):
@@ -797,6 +801,7 @@ class BallHost:
         wc = WNDCLASSW()
         wc.lpfnWndProc = self._wndproc_ref
         wc.hInstance = hinst
+        wc.hCursor = user32.LoadCursorW(None, IDC_ARROW)
         wc.lpszClassName = 'WinCtlPanel3Ball'
         if not user32.RegisterClassW(ctypes.byref(wc)):
             return
@@ -942,11 +947,13 @@ class BallHost:
                         self._edge = None
                         self._apply()
                 else:
-                    # 悬停：收起的球弹出 + 展开功能面板
                     tme = TRACKMOUSEEVENT(ctypes.sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd, 0)
                     user32.TrackMouseEvent(ctypes.byref(tme))
-                    if self._tucked:
-                        self._set_target(self._anchor)
+                    if self._hover_suppress:
+                        return 0  # 面板刚缩回、光标还在球上：等移出再允许悬停弹出
+                    # 面板 morph 取代滑行动画——_apply 的 SHOWWINDOW 会把刚藏起的球顶回来
+                    user32.KillTimer(hwnd, 1)
+                    self._target = None
                     self._show_panel()
                 return 0
             if msg == 0x0202:  # WM_LBUTTONUP
@@ -970,8 +977,9 @@ class BallHost:
                     self._dragging = False
                 return 0
             if msg == WM_MOUSELEAVE:
+                self._hover_suppress = False
                 if self._grab is None:
-                    user32.SetTimer(hwnd, 2, 350, None)  # 宽限期后再判断收起
+                    user32.SetTimer(hwnd, 2, 350, None)
                 return 0
             if msg == WM_TIMER:
                 if int(wparam) == 2:  # 鼠标离开宽限期：不在球/面板上 → 收面板 + 视情况收回球
@@ -1032,6 +1040,7 @@ class BallHost:
         wc = WNDCLASSW()
         wc.lpfnWndProc = self._panel_ref
         wc.hInstance = hinst
+        wc.hCursor = user32.LoadCursorW(None, IDC_ARROW)
         wc.lpszClassName = 'WinCtlPanel3BallPanel'
         if not user32.RegisterClassW(ctypes.byref(wc)):
             return
@@ -1115,13 +1124,14 @@ class BallHost:
         m = self._morph
         fx, fy, fw, fh = m['from']
         tx, ty, tw, th = m['to']
-        t = min(1.0, m['step'] / 7.0)
+        t = min(1.0, m['step'] / 9.0)
         ease = 1 - (1 - t) * (1 - t)
         cx, cy = int(round(fx + (tx - fx) * ease)), int(round(fy + (ty - fy) * ease))
         cw, ch = int(round(fw + (tw - fw) * ease)), int(round(fh + (th - fh) * ease))
         m['cur'] = (cx, cy, cw, ch)
-        rgn = gdi32.CreateRoundRectRgn(0, 0, cw + 1, ch + 1,
-                                       int(round(12 * self.scale)), int(round(12 * self.scale)))
+        # 圆角随 morph 插值：起始正圆（球）→ 终态 12px 圆角矩形（面板）
+        rad = int(round(cw / 2.0 + (12 * self.scale - cw / 2.0) * t))
+        rgn = gdi32.CreateRoundRectRgn(0, 0, cw + 1, ch + 1, rad, rad)
         user32.SetWindowRgn(self.panel_hwnd, rgn, True)
         user32.SetWindowPos(self.panel_hwnd, wintypes.HWND(-1), cx, cy, cw, ch,
                             SWP_NOACTIVATE | SWP_SHOWWINDOW)
@@ -1177,12 +1187,20 @@ class BallHost:
                     return 0
                 m['step'] += 1
                 self._apply_morph_frame()
-                if m['step'] >= 7:
+                if m['step'] >= 9:
                     user32.KillTimer(hwnd, 1)
                     if m['phase'] == 'in':
                         user32.ShowWindow(self.panel_hwnd, 0)
                         self._panel_shown = False
                         self._apply()  # 球在原位重新出现（含置顶）
+                        pt = wintypes.POINT()
+                        user32.GetCursorPos(ctypes.byref(pt))
+                        r = wintypes.RECT()
+                        user32.GetWindowRect(self.hwnd, ctypes.byref(r))
+                        self._hover_suppress = (r.left <= pt.x <= r.right and r.top <= pt.y <= r.bottom)
+                        if self._hover_suppress:  # 光标停在球上：登记离开事件后再解除抑制
+                            tme = TRACKMOUSEEVENT(ctypes.sizeof(TRACKMOUSEEVENT), TME_LEAVE, self.hwnd, 0)
+                            user32.TrackMouseEvent(ctypes.byref(tme))
                     self._morph = None
                 return 0
             if msg == WM_LBUTTONDOWN:
