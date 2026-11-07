@@ -34,6 +34,7 @@ Windows 11 未激活，「设置 → 个性化」整类被锁 → 把 6 项功�
 - **编码红线**：`.ps1` UTF-8 带 BOM；`.cmd` 纯 ASCII（工作区 AGENTS.md 技术红线 1/8）。
 - 窗口关闭后 server 进程不退（bug#2，UiTimer 的 `HasExited` 检测失效）——打包成同进程后自然消失，现形态暂不修。
 - `tools\brightness.ps1` 独立可用，不受任何版本 bug 影响。
+- **球线程坐标纪律**：`WM_MOUSEMOVE` 的 lparam 是**客户区坐标**（相对球左上角），拖动定位必须用 `GetCursorPos` 屏幕坐标——混用会导致球瞬移（2026-11-07 拖动手感异常的根因）；面板文本绘制注意 `DrawTextW` 在 user32，`SetBkMode`/`SetTextColor` 在 gdi32。
 - 诊断日志：`%TEMP%\WinCtlPanel2-diag.log`（每次启动追加显示器枚举与亮度探测结果）。
 
 ## 开源仓库（2026-11-07 上线）

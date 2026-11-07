@@ -961,31 +961,19 @@ class GuiHost:
             self.ball.show()
             return
         # 默认位置由 BallHost 在球线程内按物理像素计算（BALL['x'] 为 None 时）
-        self.ball = winapi.BallHost(size=56, on_menu=self._ball_menu, on_move_end=self._ball_moved)
+        self.ball = winapi.BallHost(size=56,
+                                    on_action=ball_action,
+                                    on_panel_rows=self._panel_rows,
+                                    on_move_end=self._ball_moved)
         self.ball.start(BALL['x'], BALL['y'], tucked=BALL['tucked'])
 
     def _ball_moved(self, x, y, tucked):
         BALL['x'], BALL['y'], BALL['tucked'] = x, y, tucked
         save_ball_config()
 
-    def _ball_menu(self, hwnd):
-        menu = winapi.user32.CreatePopupMenu()
-        ids = {}
-        for offset, fid in enumerate(BALL['functions']):  # 按设置页/配置的顺序弹出
-            label = BALL_FUNC_LABELS.get(fid, fid)
-            winapi.user32.AppendMenuW(menu, 0, 100 + offset, label)
-            ids[100 + offset] = fid
-        if not ids:
-            winapi.user32.AppendMenuW(menu, 0, 0, '（未选择功能：主面板 → 更多工具 → 悬浮球设置）')
-        winapi.user32.SetForegroundWindow(hwnd)
-        pt = wintypes.POINT()
-        winapi.user32.GetCursorPos(ctypes.byref(pt))
-        cmd = winapi.user32.TrackPopupMenu(menu, 0x0100 | 0x0002 | 0x0080, pt.x, pt.y, 0, hwnd, None)
-        winapi.user32.DestroyMenu(menu)
-        winapi.user32.PostMessageW(hwnd, 0, 0, 0)
-        fid = ids.get(cmd)
-        if fid:
-            ball_action(fid)
+    def _panel_rows(self):
+        """悬浮球快捷面板的行数据（按设置页/配置顺序）。"""
+        return [(fid, BALL_FUNC_LABELS.get(fid, fid)) for fid in BALL['functions']]
 
     def _build_ball_menu(self, parent_menu):
         """托盘右键菜单的「悬浮球」子菜单：开关 + 功能自选。"""

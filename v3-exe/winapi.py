@@ -557,6 +557,39 @@ user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = ctypes.c_void_p(-4)
 WM_APP_REASSERT = WM_APP + 1  # 球线程内部：重新置顶/落位
 
+# 面板（GDI 文本快捷菜单）所需
+LWA_ALPHA = 0x2
+WM_PAINT = 0x000F
+DT_SINGLELINE = 0x20
+DT_VCENTER = 0x4
+TRANSPARENT_BK = 0x1
+
+class PAINTSTRUCT(ctypes.Structure):
+    _fields_ = [('hdc', wintypes.HDC), ('fErase', wintypes.BOOL), ('rcPaint', RECT),
+                ('fRestore', wintypes.BOOL), ('fIncUpdate', wintypes.BOOL),
+                ('rgbReserved', ctypes.c_byte * 32)]
+
+user32.SetLayeredWindowAttributes.argtypes = [wintypes.HWND, wintypes.COLORREF, wintypes.BYTE, wintypes.DWORD]
+user32.SetLayeredWindowAttributes.restype = wintypes.BOOL
+gdi32.CreateSolidBrush.argtypes = [wintypes.COLORREF]
+gdi32.CreateSolidBrush.restype = wintypes.HBRUSH
+gdi32.CreateFontW.restype = wintypes.HFONT
+gdi32.GetTextExtentPoint32W.argtypes = [wintypes.HDC, wintypes.LPCWSTR, ctypes.c_int, ctypes.POINTER(_SIZE)]
+gdi32.GetTextExtentPoint32W.restype = wintypes.BOOL
+gdi32.CreateRoundRectRgn.restype = wintypes.HRGN
+user32.SetWindowRgn.argtypes = [wintypes.HWND, wintypes.HRGN, wintypes.BOOL]
+user32.InvalidateRect.argtypes = [wintypes.HWND, ctypes.c_void_p, wintypes.BOOL]
+user32.BeginPaint.argtypes = [wintypes.HWND, ctypes.POINTER(PAINTSTRUCT)]
+user32.BeginPaint.restype = wintypes.HDC
+user32.EndPaint.argtypes = [wintypes.HWND, ctypes.POINTER(PAINTSTRUCT)]
+user32.DrawTextW.argtypes = [wintypes.HDC, wintypes.LPCWSTR, ctypes.c_int, ctypes.POINTER(wintypes.RECT), wintypes.UINT]
+user32.DrawTextW.restype = ctypes.c_int
+gdi32.SetBkMode.argtypes = [wintypes.HDC, ctypes.c_int]
+gdi32.SetTextColor.argtypes = [wintypes.HDC, wintypes.COLORREF]
+user32.FillRect.argtypes = [wintypes.HDC, ctypes.POINTER(wintypes.RECT), wintypes.HBRUSH]
+user32.FillRect.restype = ctypes.c_int
+user32.ScreenToClient.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
+
 ULW_ALPHA = 2
 AC_SRC_ALPHA = 1
 MONITOR_DEFAULTTONEAREST = 2
@@ -641,23 +674,34 @@ class BallHost:
     TUCK_VISIBLE = 10      # 收起后露出的像素
     SNAP_THRESHOLD = 48    # 距边缘多少像素内吸附
 
-    def __init__(self, size=56, on_menu=None, on_move_end=None):
+    def __init__(self, size=56, on_action=None, on_panel_rows=None, on_move_end=None):
         self.size = size              # 逻辑尺寸（56 逻辑像素 ≈ 360 悬浮球大小）
-        self.on_menu = on_menu
+        self.on_action = on_action            # fn(fid) 面板行点击
+        self.on_panel_rows = on_panel_rows    # fn() -> [(fid, label)] 面板行数据
         self.on_move_end = on_move_end
         self.hwnd = 0
         self.thread = None
         self._wndproc_ref = WNDPROC(self._dispatch)
+        self._panel_ref = WNDPROC(self._panel_dispatch)
         self._anchor = None       # 完全可见时的左上角，物理像素（持久化用）；None=未初始化
         self._cur = [0, 0]
         self._target = None
         self._tucked = True
         self._edge = None
-        self._drag = None
+        self._grab = None         # (x, y) 按下时屏幕坐标
+        self._grab_offset = None  # 握点相对窗口左上角
         self._dragging = False
         self._hbmp = 0
         self._hdcmem = 0
         self._hdc_screen = 0
+        self.panel_hwnd = 0
+        self._panel_font = 0
+        self._rows = []
+        self._hover_row = -1
+        self._panel_shown = False
+        self._panel_pad = 0
+        self._panel_row_h = 0
+        self._panel_w = 0
 
     # ---- lifecycle ----
     def start(self, x=None, y=None, tucked=True):
@@ -729,6 +773,7 @@ class BallHost:
             self._edge = self._nearest_edge(self._anchor)[0]
             self._cur = list(self._tuck_pos())
         self._apply()
+        self._create_panel(hinst)
         msg = wintypes.MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
             user32.TranslateMessage(ctypes.byref(msg))
@@ -827,32 +872,38 @@ class BallHost:
                 user32.GetCursorPos(ctypes.byref(pt))
                 rect = wintypes.RECT()
                 user32.GetWindowRect(hwnd, ctypes.byref(rect))
-                self._drag = (pt.x - rect.left, pt.y - rect.top)
+                self._grab = (pt.x, pt.y)                      # 屏幕坐标（球线程 = 物理像素）
+                self._grab_offset = (pt.x - rect.left, pt.y - rect.top)
                 self._dragging = False
                 self._target = None
+                self._hide_panel()
                 user32.KillTimer(hwnd, 1)
                 user32.KillTimer(hwnd, 2)
                 user32.SetCapture(hwnd)
                 return 0
             if msg == 0x0200:  # WM_MOUSEMOVE
-                x = _short16(lparam)
-                y = _short16(int(lparam) >> 16)
-                if self._drag is not None:
-                    if not self._dragging and (abs(x - self._cur[0] - self._drag[0]) > 4
-                                               or abs(y - self._cur[1] - self._drag[1]) > 4):
+                if self._grab is not None:
+                    pt = wintypes.POINT()
+                    user32.GetCursorPos(ctypes.byref(pt))
+                    thr = max(4, int(round(4 * self.scale)))
+                    if not self._dragging and (abs(pt.x - self._grab[0]) > thr
+                                               or abs(pt.y - self._grab[1]) > thr):
                         self._dragging = True
                     if self._dragging:
-                        self._cur = [x - self._drag[0], y - self._drag[1]]
+                        self._cur = [pt.x - self._grab_offset[0], pt.y - self._grab_offset[1]]
                         self._edge = None
                         self._apply()
-                elif self._tucked:
+                else:
+                    # 悬停：收起的球弹出 + 展开功能面板
                     tme = TRACKMOUSEEVENT(ctypes.sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd, 0)
                     user32.TrackMouseEvent(ctypes.byref(tme))
-                    self._set_target(self._anchor)
+                    if self._tucked:
+                        self._set_target(self._anchor)
+                    self._show_panel()
                 return 0
             if msg == 0x0202:  # WM_LBUTTONUP
                 user32.ReleaseCapture()
-                if self._drag is not None:
+                if self._grab is not None:
                     if self._dragging:
                         self._anchor = list(self._clamp(self._cur))
                         self._edge = self._nearest_edge(self._anchor)[0]
@@ -865,17 +916,26 @@ class BallHost:
                         if self._tucked:
                             self._set_target(self._tuck_pos())
                     else:
-                        if self.on_menu is not None:
-                            self.on_menu(hwnd)
-                    self._drag = None
+                        self._toggle_panel()  # 点击球体：展开/收起功能面板
+                    self._grab = None
+                    self._grab_offset = None
                     self._dragging = False
                 return 0
             if msg == WM_MOUSELEAVE:
-                if self._tucked and self._drag is None:
-                    self._set_target(self._tuck_pos())
+                if self._grab is None:
+                    user32.SetTimer(hwnd, 2, 350, None)  # 宽限期后再判断收起
                 return 0
             if msg == WM_TIMER:
-                if not self._target:
+                if int(wparam) == 2:  # 鼠标离开宽限期：不在球/面板上 → 收面板 + 视情况收回球
+                    user32.KillTimer(hwnd, 2)
+                    pt = wintypes.POINT()
+                    user32.GetCursorPos(ctypes.byref(pt))
+                    if not self._cursor_in_ball_or_panel(pt):
+                        self._hide_panel()
+                        if self._tucked:
+                            self._set_target(self._tuck_pos())
+                    return 0
+                if not self._target:  # id 1：滑动动画
                     user32.KillTimer(hwnd, 1)
                     return 0
                 dx = self._target[0] - self._cur[0]
@@ -892,6 +952,12 @@ class BallHost:
                 self._apply()
                 return 0
             if msg == WM_DESTROY:
+                if self.panel_hwnd:
+                    user32.DestroyWindow(self.panel_hwnd)
+                    self.panel_hwnd = 0
+                if self._panel_font:
+                    gdi32.DeleteObject(self._panel_font)
+                    self._panel_font = 0
                 if self._hbmp:
                     gdi32.DeleteObject(self._hbmp)
                     self._hbmp = 0
@@ -902,6 +968,161 @@ class BallHost:
                     user32.ReleaseDC(None, self._hdc_screen)
                     self._hdc_screen = 0
                 user32.PostQuitMessage(0)
+                return 0
+        except Exception:
+            pass
+        return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+    # ---- 悬停功能面板（同线程第二个窗口，GDI 文本行 + 整体半透明）----
+    PANEL_BG = 0x301D18        # RGB(24, 29, 48)
+    PANEL_HOVER = 0x684238     # RGB(56, 66, 104)
+    PANEL_TEXT = 0xF5E7E2      # RGB(226, 231, 245)
+
+    def _create_panel(self, hinst):
+        wc = WNDCLASSW()
+        wc.lpfnWndProc = self._panel_ref
+        wc.hInstance = hinst
+        wc.lpszClassName = 'WinCtlPanel3BallPanel'
+        if not user32.RegisterClassW(ctypes.byref(wc)):
+            return
+        self.panel_hwnd = user32.CreateWindowExW(
+            0x00000008 | 0x00000080,  # TOPMOST | TOOLWINDOW
+            wc.lpszClassName, '', 0x80000000,  # POPUP（隐藏创建）
+            0, 0, 10, 10, None, None, hinst, None)
+        if not self.panel_hwnd:
+            return
+        self._panel_font = gdi32.CreateFontW(
+            -int(round(12 * self.scale)), 0, 0, 0, 400, 0, 0, 0,
+            1, 4, 0, 5, 0, 'Microsoft YaHei UI')
+        user32.SetLayeredWindowAttributes(self.panel_hwnd, 0, 235, LWA_ALPHA)
+
+    def _panel_rows_now(self):
+        rows = []
+        if self.on_panel_rows is not None:
+            try:
+                rows = list(self.on_panel_rows() or [])
+            except Exception:
+                rows = []
+        if not rows:
+            rows = [(None, '未选择功能：主面板 → 更多工具 → 悬浮球设置')]
+        return rows
+
+    def _panel_measure(self):
+        self._panel_pad = int(round(10 * self.scale))
+        self._panel_row_h = int(round(34 * self.scale))
+        hdc = user32.GetDC(self.panel_hwnd)
+        old = gdi32.SelectObject(hdc, self._panel_font)
+        maxw = 0
+        sz = _SIZE()
+        for _fid, label in self._rows:
+            if gdi32.GetTextExtentPoint32W(hdc, label, len(label), ctypes.byref(sz)):
+                maxw = max(maxw, sz.cx)
+        gdi32.SelectObject(hdc, old)
+        user32.ReleaseDC(self.panel_hwnd, hdc)
+        self._panel_w = maxw + self._panel_pad * 2 + int(round(16 * self.scale))
+
+    def _show_panel(self):
+        if not self.panel_hwnd or self._panel_shown:
+            return
+        self._rows = self._panel_rows_now()
+        self._hover_row = -1
+        self._panel_measure()
+        height = self._panel_pad * 2 + self._panel_row_h * len(self._rows)
+        wa = _work_area((self._anchor[0] + self.size_phys / 2.0,
+                         self._anchor[1] + self.size_phys / 2.0))
+        gap = int(round(8 * self.scale))
+        if wa and self._anchor[0] + self.size_phys // 2 > (wa.left + wa.right) // 2:
+            px = self._anchor[0] - self._panel_w - gap   # 球在右半屏 → 面板在左侧
+        else:
+            px = self._anchor[0] + self.size_phys + gap
+        py = self._anchor[1] + self.size_phys // 2 - height // 2
+        if wa:
+            px = max(wa.left + 4, min(px, wa.right - self._panel_w - 4))
+            py = max(wa.top + 4, min(py, wa.bottom - height - 4))
+        rgn = gdi32.CreateRoundRectRgn(0, 0, self._panel_w + 1, height + 1,
+                                       int(round(12 * self.scale)), int(round(12 * self.scale)))
+        user32.SetWindowRgn(self.panel_hwnd, rgn, True)
+        user32.SetWindowPos(self.panel_hwnd, wintypes.HWND(-1), int(px), int(py),
+                            self._panel_w, height, SWP_NOACTIVATE | SWP_SHOWWINDOW)
+        self._panel_shown = True
+        user32.InvalidateRect(self.panel_hwnd, None, True)
+
+    def _hide_panel(self):
+        if self.panel_hwnd and self._panel_shown:
+            user32.ShowWindow(self.panel_hwnd, 0)
+            self._panel_shown = False
+
+    def _toggle_panel(self):
+        if self._panel_shown:
+            self._hide_panel()
+        else:
+            self._show_panel()
+
+    def _cursor_in_ball_or_panel(self, pt):
+        for hwnd in ((self.hwnd, self.panel_hwnd if self._panel_shown else 0)):
+            if hwnd:
+                r = wintypes.RECT()
+                user32.GetWindowRect(hwnd, ctypes.byref(r))
+                if r.left <= pt.x <= r.right and r.top <= pt.y <= r.bottom:
+                    return True
+        return False
+
+    def _panel_dispatch(self, hwnd, msg, wparam, lparam):
+        try:
+            if msg == WM_LBUTTONDOWN:
+                pt = wintypes.POINT()
+                user32.GetCursorPos(ctypes.byref(pt))
+                user32.ScreenToClient(hwnd, ctypes.byref(pt))
+                row = (pt.y - self._panel_pad) // self._panel_row_h
+                if 0 <= row < len(self._rows):
+                    fid = self._rows[row][0]
+                    self._hide_panel()
+                    if fid and self.on_action is not None:
+                        self.on_action(fid)
+                return 0
+            if msg == 0x0200:  # WM_MOUSEMOVE：悬停行高亮
+                tme = TRACKMOUSEEVENT(ctypes.sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd, 0)
+                user32.TrackMouseEvent(ctypes.byref(tme))
+                pt = wintypes.POINT()
+                user32.GetCursorPos(ctypes.byref(pt))
+                user32.ScreenToClient(hwnd, ctypes.byref(pt))
+                row = (pt.y - self._panel_pad) // self._panel_row_h
+                row = row if 0 <= row < len(self._rows) else -1
+                if row != self._hover_row:
+                    self._hover_row = row
+                    user32.InvalidateRect(hwnd, None, True)
+                return 0
+            if msg == WM_MOUSELEAVE:
+                user32.SetTimer(self.hwnd, 2, 350, None)  # 移回球上则不收起
+                return 0
+            if msg == WM_PAINT:
+                ps = PAINTSTRUCT()
+                hdc = user32.BeginPaint(hwnd, ctypes.byref(ps))
+                try:
+                    bg = gdi32.CreateSolidBrush(self.PANEL_BG)
+                    full = wintypes.RECT(0, 0, self._panel_w,
+                                         self._panel_pad * 2 + self._panel_row_h * max(len(self._rows), 1))
+                    user32.FillRect(hdc, ctypes.byref(full), bg)
+                    gdi32.DeleteObject(bg)
+                    user32.SetBkMode(hdc, TRANSPARENT_BK)
+                    old = gdi32.SelectObject(hdc, self._panel_font)
+                    for i, (fid, label) in enumerate(self._rows):
+                        y = self._panel_pad + i * self._panel_row_h
+                        if i == self._hover_row:
+                            hb = gdi32.CreateSolidBrush(self.PANEL_HOVER)
+                            hr = wintypes.RECT(2, y, self._panel_w - 2, y + self._panel_row_h)
+                            user32.FillRect(hdc, ctypes.byref(hr), hb)
+                            gdi32.DeleteObject(hb)
+                        gdi32.SetTextColor(hdc, self.PANEL_TEXT)
+                        tr = wintypes.RECT(self._panel_pad, y,
+                                           self._panel_w - self._panel_pad, y + self._panel_row_h)
+                        gdi32.DrawTextW(hdc, label, -1, ctypes.byref(tr), DT_SINGLELINE | DT_VCENTER)
+                    gdi32.SelectObject(hdc, old)
+                finally:
+                    user32.EndPaint(hwnd, ctypes.byref(ps))
+                return 0
+            if msg == WM_DESTROY:
+                self.panel_hwnd = 0
                 return 0
         except Exception:
             pass
