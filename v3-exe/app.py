@@ -1083,15 +1083,13 @@ class GuiHost:
 
         def watchdog():
             EXIT_EVENT.wait()
-            # 优先让 GUI 线程走原生关闭流程（window.destroy 跨线程不保证生效）
+            # 只投递原生 WM_CLOSE——pywebview 的关闭流程会自行清理并让 webview.start 返回。
+            # 千万不要再调 window.destroy()：原生关闭已 del instances[uid]，二次 Close 会
+            # 重入 on_close → KeyError('master') → WinForms 未处理异常错误框。
             hwnd = winapi.find_main_hwnd(APP_TITLE)
             if hwnd:
                 import ctypes
                 ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
-            try:
-                self.window.destroy()
-            except Exception:
-                pass
             # 硬兜底：8 秒内主循环仍未返回就强制退出，绝不留僵尸进程
             hard = threading.Timer(8.0, lambda: os._exit(0))
             hard.daemon = True
