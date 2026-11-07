@@ -282,7 +282,8 @@ class TrayHost:
     """Hidden window thread: tray icon (show/topmost/exit menu) + global hotkeys."""
 
     def __init__(self, title, icon_path, on_show, on_topmost, on_exit, on_hotkey,
-                 on_hotkey_state=None, on_build_menu=None, on_menu=None):
+                 on_hotkey_state=None, on_build_menu=None, on_menu=None,
+                 on_autostart_state=None, on_autostart_toggle=None):
         self.title = title
         self.icon_path = icon_path
         self.on_show = on_show

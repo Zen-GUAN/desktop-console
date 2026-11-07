@@ -469,7 +469,6 @@ def ball_action(fid):
         elif fid == 'restore':
             failed = restore_all()
             if failed:
-                import ctypes
                 ctypes.windll.user32.MessageBoxW(0, '部分项目未能还原，备份已保留：\n' + '\n'.join(failed),
                                                  APP_TITLE, 0x10)
         elif fid == 'wallpaper':
@@ -481,7 +480,6 @@ def ball_action(fid):
         elif fid == 'exit':
             EXIT_EVENT.set()
     except Exception as exc:
-        import ctypes
         ctypes.windll.user32.MessageBoxW(0, '操作失败：%s' % exc, APP_TITLE, 0x10)
 
 
@@ -962,6 +960,18 @@ def run_selftest():
     except Exception as exc:
         check('panel-paint-smoke', False, str(exc))
 
+    # 宿主构造签名冒烟：防止回调参数漂移（GUI 才会炸、无窗口模式测不到的类）
+    try:
+        tray = winapi.TrayHost('t', None, lambda: None, lambda v: None, lambda: None, lambda i: None,
+                               on_build_menu=lambda m: None, on_menu=lambda c: None,
+                               on_autostart_state=lambda: False, on_autostart_toggle=lambda: None)
+        ball = winapi.BallHost(56, on_action=lambda f: None, on_panel_rows=lambda: [],
+                               on_move_end=lambda x, y, t: None,
+                               on_brightness=lambda: None, on_set_brightness=lambda p: None)
+        check('host-wiring', tray is not None and ball is not None, 'TrayHost/BallHost 构造签名')
+    except Exception as exc:
+        check('host-wiring', False, str(exc))
+
     # 悬浮球渲染：尺寸正确、四角透明、中心有像素、预乘合法
     try:
         api_ok = all(hasattr(mod, name) for mod, name in (
@@ -1038,7 +1048,6 @@ class GuiHost:
             pass
         hwnd = winapi.find_main_hwnd(APP_TITLE)
         if hwnd:
-            import ctypes
             ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
             ctypes.windll.user32.SetForegroundWindow(hwnd)
 
@@ -1144,7 +1153,6 @@ class GuiHost:
             # 重入 on_close → KeyError('master') → WinForms 未处理异常错误框。
             hwnd = winapi.find_main_hwnd(APP_TITLE)
             if hwnd:
-                import ctypes
                 ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
             # 硬兜底：8 秒内主循环仍未返回就强制退出，绝不留僵尸进程
             hard = threading.Timer(8.0, lambda: os._exit(0))
@@ -1269,14 +1277,12 @@ def main():
             # 无窗口调试模式：静默失败退出，绝不弹框挡测试
             print('another instance is already running', file=sys.stderr)
             return 2
-        import ctypes
         ctypes.windll.user32.MessageBoxW(0, '桌面控制台已经在运行了，请查看系统托盘。', APP_TITLE, 0)
         return 0
 
     try:
         BACKUP = Backup()
     except RuntimeError as exc:
-        import ctypes
         ctypes.windll.user32.MessageBoxW(0, str(exc), APP_TITLE, 0x10)
         return 1
 
