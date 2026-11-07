@@ -1100,7 +1100,7 @@ class BallHost:
         return rows
 
     def _panel_measure(self):
-        self._panel_pad = int(round(10 * self.scale))
+        self._panel_pad = int(round(12 * self.scale))
         self._panel_row_h = int(round(34 * self.scale))
         hdc = user32.GetDC(self.panel_hwnd)
         old = gdi32.SelectObject(hdc, self._panel_font)
@@ -1114,7 +1114,8 @@ class BallHost:
                 maxw = max(maxw, sz.cx)
         gdi32.SelectObject(hdc, old)
         user32.ReleaseDC(self.panel_hwnd, hdc)
-        self._panel_w = maxw + self._panel_pad * 2 + int(round(16 * self.scale))
+        # 右侧留出充足空白作为拖动抓握区（文字左对齐）
+        self._panel_w = maxw + self._panel_pad * 2 + int(round(52 * self.scale))
         self._slider_y0 = self._panel_pad
         self._rows_y0 = self._panel_pad
         if self._slider_pct is not None:
@@ -1147,10 +1148,8 @@ class BallHost:
         elif self._tucked and self._edge == 'bottom':
             tx, ty = bx + self.size_phys // 2 - self._panel_w // 2, by - self._panel_h - gap
         else:
-            if wa and bx + self.size_phys // 2 > (wa.left + wa.right) // 2:
-                tx = bx - self._panel_w - gap   # 球在右半屏 → 面板在左侧
-            else:
-                tx = bx + self.size_phys + gap
+            # 未收起：面板原地展开在球上方（以球中心展开，钳制进工作区）
+            tx = bx + self.size_phys // 2 - self._panel_w // 2
             ty = by + self.size_phys // 2 - self._panel_h // 2
         if wa:
             tx = max(wa.left + 4, min(tx, wa.right - self._panel_w - 4))

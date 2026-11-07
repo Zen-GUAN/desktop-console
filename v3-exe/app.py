@@ -1010,16 +1010,25 @@ class GuiHost:
             winapi.apply_window_round(hwnd)
 
     def _on_resized(self, width, height):
-        self._geo.update(width=int(width), height=int(height))
-        schedule_ui_save(width=int(width), height=int(height))
-        self._apply_round()  # 无边框窗口圆角区域随尺寸重打
+        try:
+            self._geo.update(width=int(width), height=int(height))
+            schedule_ui_save(width=int(width), height=int(height))
+            self._apply_round()  # 无边框窗口圆角区域随尺寸重打
+        except Exception:
+            _global_log('_on_resized')
 
     def _on_moved(self, x, y):
-        self._geo.update(x=int(x), y=int(y))
-        schedule_ui_save(x=int(x), y=int(y))
+        try:
+            self._geo.update(x=int(x), y=int(y))
+            schedule_ui_save(x=int(x), y=int(y))
+        except Exception:
+            _global_log('_on_moved')
 
     def _on_closing(self):
-        _flush_ui_state()  # 关窗前把防抖里的几何落盘
+        try:
+            _flush_ui_state()  # 关窗前把防抖里的几何落盘
+        except Exception:
+            _global_log('_on_closing')
 
     def set_topmost(self, value):
         STATE['topmost'] = bool(value)
