@@ -650,6 +650,12 @@ user32.FillRect.restype = ctypes.c_int
 user32.ScreenToClient.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
 gdi32.Ellipse.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
 gdi32.Ellipse.restype = wintypes.BOOL
+gdi32.RoundRect.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                            ctypes.c_int, ctypes.c_int, ctypes.c_int]
+gdi32.RoundRect.restype = wintypes.BOOL
+gdi32.GetStockObject.argtypes = [ctypes.c_int]
+gdi32.GetStockObject.restype = wintypes.HGDIOBJ
+NULL_PEN = 8  # GetStockObject 索引：无描边，RoundRect 只填色
 user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
 user32.GetAsyncKeyState.restype = ctypes.c_short
 user32.LoadCursorW.restype = wintypes.HANDLE
@@ -1068,6 +1074,8 @@ class BallHost:
     PANEL_TEXT = 0xF5E7E2      # RGB(226, 231, 245)
     PANEL_TRACK = 0x56413A     # RGB(58, 65, 86)
     PANEL_MINT = 0xC2DB87      # RGB(135, 219, 194)
+    PANEL_CARD = 0x40302A      # RGB(42, 48, 64) 交互卡片底（= 应用按钮色）
+    PANEL_HANDLE = 0x857169    # RGB(105, 113, 133) 把手凹槽
 
     def _create_panel(self, hinst):
         wc = WNDCLASSW()
@@ -1100,8 +1108,12 @@ class BallHost:
         return rows
 
     def _panel_measure(self):
-        self._panel_pad = int(round(12 * self.scale))
+        self._panel_pad = int(round(10 * self.scale))
+        self._card_inset = int(round(6 * self.scale))
+        self._handle_h = int(round(16 * self.scale))
         self._panel_row_h = int(round(34 * self.scale))
+        self._row_gap = int(round(4 * self.scale))
+        self._slider_card_h = int(round(42 * self.scale))
         hdc = user32.GetDC(self.panel_hwnd)
         old = gdi32.SelectObject(hdc, self._panel_font)
         maxw = 0
@@ -1114,18 +1126,35 @@ class BallHost:
                 maxw = max(maxw, sz.cx)
         gdi32.SelectObject(hdc, old)
         user32.ReleaseDC(self.panel_hwnd, hdc)
-        # 右侧留出充足空白作为拖动抓握区（文字左对齐）
-        self._panel_w = maxw + self._panel_pad * 2 + int(round(52 * self.scale))
-        self._slider_y0 = self._panel_pad
-        self._rows_y0 = self._panel_pad
-        if self._slider_pct is not None:
-            text_h = int(round(18 * self.scale))
-            track_y = self._slider_y0 + text_h + int(round(4 * self.scale))
-            self._slider_track_y = track_y
-            self._slider_track_h = int(round(6 * self.scale))
-            self._slider_y1 = track_y + self._slider_track_h + int(round(8 * self.scale))
-            self._rows_y0 = self._slider_y1
-        self._panel_h = self._rows_y0 + self._panel_row_h * len(self._rows) + self._panel_pad
+        # 卡片左右内缩 6px，外侧连同上下边距都是拖动区
+        self._panel_w = maxw + self._card_inset * 2 + int(round(56 * self.scale))
+        self._slider_y0 = self._panel_pad + self._handle_h
+        self._rows_y0 = self._slider_y0 + self._slider_card_h + int(round(6 * self.scale))
+        self._slider_text_y = self._slider_y0 + int(round(7 * self.scale))
+        self._slider_track_y = self._slider_y0 + int(round(27 * self.scale))
+        self._slider_track_h = int(round(6 * self.scale))
+        self._slider_y1 = self._slider_y0 + self._slider_card_h
+        self._panel_h = self._rows_y0 + len(self._rows) * (self._panel_row_h + self._row_gap) \
+            - self._row_gap + self._panel_pad
+
+    def _row_at(self, client_y):
+        """行命中：带间隙的显式带检查。"""
+        for i in range(len(self._rows)):
+            ry = self._rows_y0 + i * (self._panel_row_h + self._row_gap)
+            if ry <= client_y <= ry + self._panel_row_h:
+                return i
+        return None
+
+    def _fill_round(self, hdc, l, t, r, b, color, radius):
+        """无边框圆角矩形填充（卡片/把手）。"""
+        pen = gdi32.GetStockObject(NULL_PEN)
+        old_pen = gdi32.SelectObject(hdc, pen)
+        br = gdi32.CreateSolidBrush(color)
+        old_br = gdi32.SelectObject(hdc, br)
+        gdi32.RoundRect(hdc, l, t, r + 1, b + 1, radius, radius)
+        gdi32.SelectObject(hdc, old_br)
+        gdi32.SelectObject(hdc, old_pen)
+        gdi32.DeleteObject(br)
 
     def _show_panel(self):
         if not self.panel_hwnd or self._panel_shown or self._morph:
@@ -1258,8 +1287,8 @@ class BallHost:
                     user32.SetCapture(hwnd)
                     self._apply_slider_x(client.x)
                     return 0
-                row = (client.y - self._rows_y0) // self._panel_row_h
-                self._click_row = row if 0 <= row < len(self._rows) else None
+                row = self._row_at(client.y)
+                self._click_row = row
                 pr = wintypes.RECT()
                 user32.GetWindowRect(hwnd, ctypes.byref(pr))
                 self._panel_drag = {'start': (pt.x, pt.y), 'panel_pos': (pr.left, pr.top)}
@@ -1297,8 +1326,8 @@ class BallHost:
                         user32.SetWindowPos(self.hwnd, wintypes.HWND(-1), int(self._cur[0]),
                                             int(self._cur[1]), 0, 0, SWP_NOSIZE | SWP_NOACTIVATE)
                     return 0
-                row = (client.y - self._rows_y0) // self._panel_row_h
-                row = row if 0 <= row < len(self._rows) else -1
+                row = self._row_at(client.y)
+                row = -1 if row is None else row
                 if row != self._hover_row:
                     self._hover_row = row
                     user32.InvalidateRect(hwnd, None, True)
@@ -1339,6 +1368,8 @@ class BallHost:
             if msg == WM_PAINT:
                 ps = PAINTSTRUCT()
                 hdc = user32.BeginPaint(hwnd, ctypes.byref(ps))
+                card_l = self._card_inset
+                card_r = self._panel_w - self._card_inset
                 try:
                     bg = gdi32.CreateSolidBrush(self.PANEL_BG)
                     full = wintypes.RECT(0, 0, self._panel_w, max(self._panel_h, 10))
@@ -1350,22 +1381,32 @@ class BallHost:
                     gdi32.SetBkMode(hdc, TRANSPARENT_BK)
                     if self._panel_font:
                         gdi32.SelectObject(hdc, self._panel_font)
-                    # 亮度滑块（无 DDC 时 _slider_pct 为 None 跳过）
+                    # 顶部把手凹槽：拖动指示（非交互，整条顶带皆可拖）
+                    pill_w = int(round(44 * self.scale))
+                    pill_h = max(3, int(round(4 * self.scale)))
+                    self._fill_round(hdc, (self._panel_w - pill_w) // 2, max(3, self._panel_pad // 2 - pill_h // 2),
+                                     (self._panel_w + pill_w) // 2, max(3, self._panel_pad // 2 - pill_h // 2) + pill_h,
+                                     self.PANEL_HANDLE, pill_h)
+                    # 亮度滑块卡片（无 DDC 时跳过）
                     if self._slider_pct is not None:
                         try:
+                            self._fill_round(hdc, card_l, self._slider_y0, card_r,
+                                             self._slider_y0 + self._slider_card_h,
+                                             self.PANEL_CARD, int(round(12 * self.scale)))
                             gdi32.SetTextColor(hdc, self.PANEL_TEXT)
-                            lt = wintypes.RECT(self._panel_pad, self._slider_y0,
-                                               self._panel_w // 2, self._slider_y0 + int(round(18 * self.scale)))
+                            text_h = int(round(18 * self.scale))
+                            lt = wintypes.RECT(card_l + int(round(12 * self.scale)), self._slider_text_y,
+                                               self._panel_w // 2, self._slider_text_y + text_h)
                             user32.DrawTextW(hdc, '亮度', -1, ctypes.byref(lt), DT_SINGLELINE | DT_VCENTER)
-                            pt2 = wintypes.RECT(self._panel_w // 2, self._slider_y0,
-                                                self._panel_w - self._panel_pad,
-                                                self._slider_y0 + int(round(18 * self.scale)))
+                            pt2 = wintypes.RECT(self._panel_w // 2, self._slider_text_y,
+                                                card_r - int(round(12 * self.scale)),
+                                                self._slider_text_y + text_h)
                             user32.DrawTextW(hdc, '%d%%' % self._slider_pct, -1, ctypes.byref(pt2),
                                              DT_SINGLELINE | DT_VCENTER | 0x2)  # DT_RIGHT
+                            x0 = card_l + int(round(12 * self.scale))
+                            x1 = card_r - int(round(12 * self.scale))
                             ty = self._slider_track_y
                             th = self._slider_track_h
-                            x0 = self._panel_pad
-                            x1 = self._panel_w - self._panel_pad
                             track_br = gdi32.CreateSolidBrush(self.PANEL_TRACK)
                             tr_full = wintypes.RECT(x0, ty, x1, ty + th)
                             user32.FillRect(hdc, ctypes.byref(tr_full), track_br)
@@ -1386,17 +1427,17 @@ class BallHost:
                             gdi32.DeleteObject(thumb_br)
                         except Exception:
                             _ball_log_exc('panel-paint-slider')
+                    # 功能行卡片（卡片间缝隙 = 拖动区）
                     for i, (fid, label) in enumerate(self._rows):
                         try:
-                            y = self._rows_y0 + i * self._panel_row_h
-                            if i == self._hover_row:
-                                hb = gdi32.CreateSolidBrush(self.PANEL_HOVER)
-                                hr = wintypes.RECT(2, y, self._panel_w - 2, y + self._panel_row_h)
-                                user32.FillRect(hdc, ctypes.byref(hr), hb)
-                                gdi32.DeleteObject(hb)
+                            y = self._rows_y0 + i * (self._panel_row_h + self._row_gap)
+                            color = self.PANEL_HOVER if i == self._hover_row else self.PANEL_CARD
+                            self._fill_round(hdc, card_l, y, card_r, y + self._panel_row_h,
+                                             color, int(round(10 * self.scale)))
                             gdi32.SetTextColor(hdc, self.PANEL_TEXT)
-                            tr = wintypes.RECT(self._panel_pad, y,
-                                               self._panel_w - self._panel_pad, y + self._panel_row_h)
+                            tr = wintypes.RECT(card_l + int(round(12 * self.scale)), y,
+                                               card_r - int(round(12 * self.scale)),
+                                               y + self._panel_row_h)
                             user32.DrawTextW(hdc, label, -1, ctypes.byref(tr), DT_SINGLELINE | DT_VCENTER)
                         except Exception:
                             _ball_log_exc('panel-paint-row-%d' % i)
