@@ -396,6 +396,44 @@ def current_brightness():
     return None
 
 
+# ---------------------------------------------------------------- 开机自启（HKCU Run）
+
+RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
+RUN_VALUE_NAME = APP_TITLE
+
+
+def app_launch_target():
+    if getattr(sys, 'frozen', False):
+        return '"%s" --minimized' % sys.executable
+    return '"%s" "%s" --minimized' % (sys.executable, os.path.abspath(__file__))
+
+
+def autostart_enabled():
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+            value, _t = winreg.QueryValueEx(key, RUN_VALUE_NAME)
+            return bool(value)
+    except OSError:
+        return False
+
+
+def set_autostart(enabled):
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+        if enabled:
+            winreg.SetValueEx(key, RUN_VALUE_NAME, 0, winreg.REG_SZ, app_launch_target())
+        else:
+            try:
+                winreg.DeleteValue(key, RUN_VALUE_NAME)
+            except OSError:
+                pass
+
+
+def toggle_autostart():
+    enabled = not autostart_enabled()
+    set_autostart(enabled)
+    return enabled
+
+
 def ball_config_payload():
     """悬浮球设置的完整 payload（GET 响应 / POST 保存后的回执）。"""
     return {'ok': True, 'enabled': BALL['enabled'], 'functions': list(BALL['functions']),
@@ -1036,7 +1074,7 @@ class GuiHost:
         winapi.apply_topmost(hwnd, value)
         update_ui_state(topmost=bool(value))
 
-    def run(self, port):
+    def run(self, port, minimized=False):
         import webview
         ui = load_ui_state()
         self._geo = {'width': int(ui.get('width') or 380), 'height': int(ui.get('height') or 600),
@@ -1047,6 +1085,21 @@ class GuiHost:
             width=self._geo['width'], height=self._geo['height'],
             x=self._geo['x'], y=self._geo['y'], min_size=(340, 480),
             frameless=True, easy_drag=False, shadow=True)
+        # 注意：不用 pywebview 的 hidden=True——隐藏父窗口上 WebView2 控制器初始化会 E_ABORT。
+        # --minimized 改为"正常创建 + 页面 loaded 后立即隐藏"（开机闪现约 1-2 秒）。
+        if minimized:
+            def on_loaded_hide():
+                try:
+                    self.window.hide()
+                except Exception:
+                    pass
+                hwnd = winapi.find_main_hwnd(APP_TITLE, include_hidden=True)
+                if hwnd:
+                    winapi.apply_window_round(hwnd)
+            try:
+                self.window.events.loaded += on_loaded_hide
+            except Exception:
+                pass
         try:
             self.window.events.resized += self._on_resized
             self.window.events.moved += self._on_moved
@@ -1062,6 +1115,8 @@ class GuiHost:
             on_hotkey_state=self._hotkey_state,
             on_build_menu=self._build_ball_menu,
             on_menu=self._tray_menu,
+            on_autostart_state=autostart_enabled,
+            on_autostart_toggle=toggle_autostart,
         )
         self.tray.start([(1, 3, 0x26), (2, 3, 0x28), (3, 3, 0x44)],
                         initial_topmost=STATE['topmost'])
@@ -1072,9 +1127,10 @@ class GuiHost:
             self.ensure_ball()
 
         def round_when_ready():
-            # 无边框窗口就绪后打一次圆角区域；后续 resize/move 事件会重打
+            # 无边框窗口就绪后打一次圆角区域；后续 resize/move 事件会重打。
+            # --minimized 时窗口隐藏，include_hidden 才找得到
             for _ in range(150):
-                hwnd = winapi.find_main_hwnd(APP_TITLE)
+                hwnd = winapi.find_main_hwnd(APP_TITLE, include_hidden=True)
                 if hwnd:
                     winapi.apply_window_round(hwnd)
                     return
@@ -1188,6 +1244,8 @@ def main():
     parser.add_argument('--port', type=int, default=0, help='fixed port (default: random free port)')
     parser.add_argument('--no-window', action='store_true', help='run HTTP server only, no GUI')
     parser.add_argument('--selftest', action='store_true', help='run backend self test and exit')
+    parser.add_argument('--minimized', action='store_true',
+                        help='start with main window hidden (ball + tray only)')
     args = parser.parse_args()
 
     if args.selftest:
@@ -1202,10 +1260,15 @@ def main():
             sys.stderr = log_file
         except Exception:
             pass
-    sys.excepthook = lambda t, v, tb: _global_log('sys.excepthook')
-    threading.excepthook = lambda a: _global_log('thread %s' % getattr(a, 'thread', None))
+    sys.excepthook = lambda t, v, tb: None if issubclass(t, SystemExit) else _global_log('sys.excepthook')
+    threading.excepthook = lambda a: None if issubclass(a.exc_type, SystemExit) else \
+        _global_log('thread %s' % getattr(a, 'thread', None))
 
     if not winapi.acquire_single_instance(MUTEX_NAME):
+        if args.no_window:
+            # 无窗口调试模式：静默失败退出，绝不弹框挡测试
+            print('another instance is already running', file=sys.stderr)
+            return 2
         import ctypes
         ctypes.windll.user32.MessageBoxW(0, '桌面控制台已经在运行了，请查看系统托盘。', APP_TITLE, 0)
         return 0
@@ -1245,7 +1308,7 @@ def main():
         GUI_HOST = gui
         handle_api.gui = gui
         try:
-            gui.run(SERVER_PORT)
+            gui.run(SERVER_PORT, minimized=args.minimized)
         except Exception as exc:
             if EXIT_EVENT.is_set():
                 # 用户主动退出过程中的 teardown 异常：静默（记录备查）

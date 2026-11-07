@@ -157,13 +157,14 @@ user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM,
 user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
                                 ctypes.c_int, ctypes.c_int, wintypes.UINT]
 
-def find_main_hwnd(title):
-    """Visible top-level window of this process with the given title."""
+def find_main_hwnd(title, include_hidden=False):
+    """Top-level window of this process with the given title（默认仅可见窗口）."""
     candidates = []
     def cb(hwnd, lparam):
         pid = wintypes.DWORD(0)
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if pid.value == os.getpid() and user32.IsWindowVisible(hwnd) and user32.GetWindowTextLengthW(hwnd) > 0:
+        if pid.value == os.getpid() and (include_hidden or user32.IsWindowVisible(hwnd)) \
+                and user32.GetWindowTextLengthW(hwnd) > 0:
             candidates.append(hwnd)
             return False
         return True
@@ -291,6 +292,8 @@ class TrayHost:
         self.on_hotkey_state = on_hotkey_state or (lambda hotkey_id, ok: None)
         self.on_build_menu = on_build_menu   # fn(parent_hmenu) → 追加扩展子菜单
         self.on_menu = on_menu               # fn(cmd) → 分发扩展菜单命令
+        self.on_autostart_state = None       # fn() -> bool 开机自启当前状态
+        self.on_autostart_toggle = None      # fn() 切换开机自启
         self.topmost = False
         self.hwnd = 0
         self.hicon = 0
@@ -378,7 +381,9 @@ class TrayHost:
     def _popup_menu(self, hwnd):
         menu = user32.CreatePopupMenu()
         user32.AppendMenuW(menu, 0x00000000, 1, '显示面板')
-        user32.AppendMenuW(menu, 0x00000008 if self.topmost else 0x00000000, 2, '窗口置顶')  # MF_CHECKED
+        user32.AppendMenuW(menu, 0x00000008 if self.topmost else 0x00000000, 2, '窗口置顶')
+        autostart_on = self.on_autostart_state() if self.on_autostart_state else False
+        user32.AppendMenuW(menu, 0x00000008 if autostart_on else 0x00000000, 4, '开机自启')
         user32.AppendMenuW(menu, 0x00000800, 0, None)  # MF_SEPARATOR
         user32.AppendMenuW(menu, 0x00000000, 3, '退出（保留更改）')
         if self.on_build_menu is not None:
@@ -397,6 +402,9 @@ class TrayHost:
         elif cmd == 2:
             self.topmost = not self.topmost
             self.on_topmost(self.topmost)
+        elif cmd == 4:
+            if self.on_autostart_toggle is not None:
+                self.on_autostart_toggle()
         elif cmd == 3:
             self.on_exit()
         elif cmd and self.on_menu is not None:
