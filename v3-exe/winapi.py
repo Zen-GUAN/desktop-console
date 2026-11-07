@@ -1100,14 +1100,25 @@ class BallHost:
         self._hover_row = -1
         self._slider_pct = self.on_brightness() if self.on_brightness else None
         self._panel_measure()
-        wa = _work_area((self._anchor[0] + self.size_phys / 2.0,
-                         self._anchor[1] + self.size_phys / 2.0))
+        wa = _work_area((self._cur[0] + self.size_phys / 2.0,
+                         self._cur[1] + self.size_phys / 2.0))
         gap = int(round(8 * self.scale))
-        if wa and self._anchor[0] + self.size_phys // 2 > (wa.left + wa.right) // 2:
-            tx = self._anchor[0] - self._panel_w - gap   # 球在右半屏 → 面板在左侧
+        bx, by = int(self._cur[0]), int(self._cur[1])
+        # 面板永远贴着球的「可见部分」：收起时贴边缘露头，未收起时贴球身
+        if self._tucked and self._edge == 'right':
+            tx, ty = bx - self._panel_w - gap, by + self.size_phys // 2 - self._panel_h // 2
+        elif self._tucked and self._edge == 'left':
+            tx, ty = bx + self.size_phys + gap, by + self.size_phys // 2 - self._panel_h // 2
+        elif self._tucked and self._edge == 'top':
+            tx, ty = bx + self.size_phys // 2 - self._panel_w // 2, by + self.size_phys + gap
+        elif self._tucked and self._edge == 'bottom':
+            tx, ty = bx + self.size_phys // 2 - self._panel_w // 2, by - self._panel_h - gap
         else:
-            tx = self._anchor[0] + self.size_phys + gap
-        ty = self._anchor[1] + self.size_phys // 2 - self._panel_h // 2
+            if wa and bx + self.size_phys // 2 > (wa.left + wa.right) // 2:
+                tx = bx - self._panel_w - gap   # 球在右半屏 → 面板在左侧
+            else:
+                tx = bx + self.size_phys + gap
+            ty = by + self.size_phys // 2 - self._panel_h // 2
         if wa:
             tx = max(wa.left + 4, min(tx, wa.right - self._panel_w - 4))
             ty = max(wa.top + 4, min(ty, wa.bottom - self._panel_h - 4))
