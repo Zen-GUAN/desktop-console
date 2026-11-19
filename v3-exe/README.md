@@ -66,10 +66,11 @@ python app.py --no-window --port 18779   # 无窗口模式，curl 调 API
 
 ## 已知说明
 
-- **无签名，首次运行 SmartScreen 会提示「未知发布者」**——点「更多信息 → 仍要运行」，正常现象
+- **无签名，SmartScreen 可能提示「未知发布者」**——点「更多信息 → 仍要运行」，正常现象
+- **若被硬拦**（双击报「Windows 已保护你的电脑」，命令行报 `Permission denied` 或「已被组织的 Device Guard 策略阻止」）：是 Windows 的 **Smart App Control** 在拦无签名 exe，Defender 排除与「仍要运行」都无效。解法：设置 → Windows 安全中心 → 应用和浏览器控制 → Smart App Control → 关（**不可逆**，关后重启一次彻底清策略）
 - 若 WebView2 窗口起不来（日志报 `E_ABORT`/`Failed to delete user data folder`），多为上次**强杀进程**留下的 msedgewebview2 僵尸锁住了数据目录——结束那些僵尸（或重启）再开即可；正常关闭不会残留（系统的 6 个 msedgewebview2 属于 Windows Shell，勿动）
 - **锁屏图片**功能运行时会弹 UAC（写 HKLM 组策略必须提权，与 v1/v2 行为一致）；其余功能全都不需要管理员
-- **开机自启未做**——要加的话参考 `yuancheng` 项目的 Startup + VBS 方案（工作区 AGENTS.md 有验证记录）
+- **开机自启**：托盘右键勾选「开机自启」即可（HKCU Run + 静默启动），详见上方「开机自启」小节
 - 图标是 `gen_icon.py` 按前端 favicon 复刻的纯代码生成品；想换图标就替换 `icon.ico` 重新 build
 - `build\` 与 `*.spec` 是 PyInstaller 过程产物，可删，下次 build 自动重建
 
