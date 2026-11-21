@@ -44,6 +44,9 @@ def main():
         '--collect-all', 'webview',
         '--collect-all', 'clr_loader',
         '--collect-all', 'pythonnet',
+        # 悬浮球电量行读 Razer HID（hidapi 扩展 + hid.dll）
+        '--collect-all', 'hidapi',
+        '--collect-all', 'hid',
         os.path.join(HERE, 'app.py'),
     ]
     print('[build] ' + ' '.join(args))

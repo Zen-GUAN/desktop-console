@@ -767,13 +767,14 @@ class BallHost:
     SNAP_THRESHOLD = 48    # 距边缘多少像素内吸附
 
     def __init__(self, size=56, on_action=None, on_panel_rows=None, on_move_end=None,
-                 on_brightness=None, on_set_brightness=None):
+                 on_brightness=None, on_set_brightness=None, on_battery_text=None):
         self.size = size              # 逻辑尺寸（56 逻辑像素 ≈ 360 悬浮球大小）
         self.on_action = on_action            # fn(fid) 面板行点击
         self.on_panel_rows = on_panel_rows    # fn() -> [(fid, label)] 面板行数据
         self.on_move_end = on_move_end
         self.on_brightness = on_brightness        # fn() -> int|None 当前亮度百分比
         self.on_set_brightness = on_set_brightness  # fn(pct) 设置全部显示器亮度
+        self.on_battery_text = on_battery_text    # fn() -> str|None 外设电量文本（异步填入面板）
         self.hwnd = 0
         self.thread = None
         self._wndproc_ref = WNDPROC(self._dispatch)
@@ -802,6 +803,7 @@ class BallHost:
         self._slider_y0 = 0
         self._slider_y1 = 0
         self._slider_pct = None      # None = 亮度不可用（无 DDC 显示器）
+        self._battery_text = None    # 电量行文本（异步查询后填入）
         self._slider_drag = False
         self._morph = None           # {'phase': 'out'|'in', 'from': (x,y,w,h), 'to': (x,y,w,h), 'step': n}
         self._hover_suppress = False  # 面板缩回后光标恰在球上：等离开再允许悬停弹出（防拍抖）
@@ -1138,11 +1140,18 @@ class BallHost:
         # 卡片左右内缩 6px，外侧连同上下边距都是拖动区
         self._panel_w = maxw + self._card_inset * 2 + int(round(56 * self.scale))
         self._slider_y0 = self._panel_pad + self._handle_h
-        self._rows_y0 = self._slider_y0 + self._slider_card_h + int(round(6 * self.scale))
+        self._slider_y1 = self._slider_y0 + self._slider_card_h
+        # 电量行保留区（布局恒定防跳变；查询异步，文本后到）
+        if self.on_battery_text is not None:
+            self._battery_y0 = self._slider_y1 + int(round(2 * self.scale))
+            self._battery_text_y = self._battery_y0 + int(round(2 * self.scale))
+            self._rows_y0 = self._battery_y0 + int(round(18 * self.scale)) + int(round(2 * self.scale))
+        else:
+            self._battery_y0 = self._slider_y1
+            self._rows_y0 = self._slider_y1 + int(round(6 * self.scale))
         self._slider_text_y = self._slider_y0 + int(round(7 * self.scale))
         self._slider_track_y = self._slider_y0 + int(round(27 * self.scale))
         self._slider_track_h = int(round(6 * self.scale))
-        self._slider_y1 = self._slider_y0 + self._slider_card_h
         self._panel_h = self._rows_y0 + len(self._rows) * (self._panel_row_h + self._row_gap) \
             - self._row_gap + self._panel_pad
 
@@ -1171,7 +1180,10 @@ class BallHost:
         self._rows = self._panel_rows_now()
         self._hover_row = -1
         self._slider_pct = self.on_brightness() if self.on_brightness else None
+        self._battery_text = None
         self._panel_measure()
+        if self.on_battery_text is not None:
+            user32.SetTimer(self.panel_hwnd, 3, 350, None)  # 异步查询电量，随后填入
         wa = _work_area((self._cur[0] + self.size_phys / 2.0,
                          self._cur[1] + self.size_phys / 2.0))
         gap = int(round(8 * self.scale))
@@ -1261,6 +1273,17 @@ class BallHost:
 
     def _panel_dispatch(self, hwnd, msg, wparam, lparam):
         try:
+            if msg == WM_TIMER and int(wparam) == 3:  # 电量异步查询（面板弹出后一次性）
+                user32.KillTimer(hwnd, 3)
+                if self.on_battery_text is not None and self._panel_shown:
+                    try:
+                        text = self.on_battery_text()
+                    except Exception:
+                        text = None
+                    if text and text != self._battery_text:
+                        self._battery_text = text
+                        user32.InvalidateRect(hwnd, None, True)
+                return 0
             if msg == WM_TIMER and int(wparam) == 1:  # morph 动画帧
                 m = self._morph
                 if not m:
@@ -1396,6 +1419,17 @@ class BallHost:
                     self._fill_round(hdc, (self._panel_w - pill_w) // 2, max(3, self._panel_pad // 2 - pill_h // 2),
                                      (self._panel_w + pill_w) // 2, max(3, self._panel_pad // 2 - pill_h // 2) + pill_h,
                                      self.PANEL_HANDLE, pill_h)
+                    # 电量行（异步查询；滑块卡片与功能行之间的保留区）
+                    if self.on_battery_text is not None and self._battery_text:
+                        try:
+                            gdi32.SetTextColor(hdc, self.PANEL_MINT)
+                            tr_b = wintypes.RECT(card_l + int(round(12 * self.scale)), self._battery_text_y,
+                                                 card_r - int(round(12 * self.scale)),
+                                                 self._battery_text_y + int(round(16 * self.scale)))
+                            user32.DrawTextW(hdc, self._battery_text, -1, ctypes.byref(tr_b),
+                                             DT_SINGLELINE | DT_VCENTER)
+                        except Exception:
+                            _ball_log_exc('panel-paint-battery')
                     # 亮度滑块卡片（无 DDC 时跳过）
                     if self._slider_pct is not None:
                         try:

@@ -960,6 +960,14 @@ def run_selftest():
     except Exception as exc:
         check('panel-paint-smoke', False, str(exc))
 
+    # 外设电量：hidapi 可用性 + Razer 鼠标集合枚举（不要求本机一定有电池设备）
+    try:
+        import razer_battery
+        cols = razer_battery._mouse_collections()
+        check('razer-hid', True, 'hidapi OK, 雷蛇鼠标集合=%d' % len(cols))
+    except Exception as exc:
+        check('razer-hid', False, str(exc))
+
     # 宿主构造签名冒烟：防止回调参数漂移（GUI 才会炸、无窗口模式测不到的类）
     try:
         tray = winapi.TrayHost('t', None, lambda: None, lambda v: None, lambda: None, lambda i: None,
@@ -1172,7 +1180,8 @@ class GuiHost:
                                     on_panel_rows=self._panel_rows,
                                     on_move_end=self._ball_moved,
                                     on_brightness=current_brightness,
-                                    on_set_brightness=set_all_brightness)
+                                    on_set_brightness=set_all_brightness,
+                                    on_battery_text=self._panel_battery_text)
         self.ball.start(BALL['x'], BALL['y'], tucked=BALL['tucked'])
 
     def _ball_moved(self, x, y, tucked):
@@ -1182,6 +1191,14 @@ class GuiHost:
     def _panel_rows(self):
         """悬浮球快捷面板的行数据（按设置页/配置顺序）。"""
         return [(fid, BALL_FUNC_LABELS.get(fid, fid)) for fid in BALL['functions']]
+
+    def _panel_battery_text(self):
+        """悬浮球面板的电量行文本（Razer 无线鼠标；杂牌接收器无上报通道则返回 None）。"""
+        try:
+            import razer_battery
+            return razer_battery.read_line()
+        except Exception:
+            return None
 
     def _build_ball_menu(self, parent_menu):
         """托盘右键菜单的「悬浮球」子菜单：开关 + 功能自选。"""

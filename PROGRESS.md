@@ -22,3 +22,7 @@
 
 - 代码签名（消除 SmartScreen 提示）
 - 悬停 morph 时长/面板配色等手感参数微调（均为常数，反馈即调）
+
+## 新增（2026-11-20）
+
+- **键盘延迟探针 `tools\kbdprobe\`**（按任务书 2026-11-19 交付）：LL 键盘钩子量化「迟滞/粘滞」，单文件纯标准库，无需管理员。隐私红线=只记 VK 数字/时间戳/事件类型/派生指标（源码 grep 自审零调用）。自测 39 项断言 PASS；SendInput 注入端到端实测通过（含长按带 repeat→不算粘滞的分类验证）。踩坑已修：① `CallNextHookEx` 必须显式 argtypes，否则 64 位 l_param 高位为 1 → 回调 OverflowError 返回 0 = 静默拦截按键（红线）；② `GetTickCount64` 需 restype=c_ulonglong（否则开机 >24.8 天截断）；③ powercfg 管道输出编码随控制台 CP 变化，须字节流 utf-8→mbcs 依次解码；④ 本机 USB 选择性暂停 GUID 是 `48e6b7a6-50f5-4782-a5d4-53bb8f07e226`（SUB_USB=2a737441），**当前值=启用**——屋主键盘问题排查第一条线索。判读方法见 `tools\kbdprobe\README.md` §三；真实 60s 采样待屋主自行跑 `run_sampling.ps1`。
