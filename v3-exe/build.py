@@ -44,9 +44,10 @@ def main():
         '--collect-all', 'webview',
         '--collect-all', 'clr_loader',
         '--collect-all', 'pythonnet',
-        # 悬浮球电量行读 Razer HID（hidapi 扩展 + hid.dll）
+        # 悬浮球电量行：Razer HID（hidapi 扩展 + hid.dll）+ 键盘 BLE GATT（winsdk WinRT 绑定）
         '--collect-all', 'hidapi',
         '--collect-all', 'hid',
+        '--collect-all', 'winsdk',
         os.path.join(HERE, 'app.py'),
     ]
     print('[build] ' + ' '.join(args))

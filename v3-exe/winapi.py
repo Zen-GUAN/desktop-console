@@ -1273,16 +1273,18 @@ class BallHost:
 
     def _panel_dispatch(self, hwnd, msg, wparam, lparam):
         try:
-            if msg == WM_TIMER and int(wparam) == 3:  # 电量异步查询（面板弹出后一次性）
+            if msg == WM_TIMER and int(wparam) == 3:  # 电量异步查询（面板弹出后一次性，后台线程）
                 user32.KillTimer(hwnd, 3)
                 if self.on_battery_text is not None and self._panel_shown:
-                    try:
-                        text = self.on_battery_text()
-                    except Exception:
-                        text = None
-                    if text and text != self._battery_text:
-                        self._battery_text = text
-                        user32.InvalidateRect(hwnd, None, True)
+                    def query_battery():
+                        try:
+                            text = self.on_battery_text()
+                        except Exception:
+                            text = None
+                        if text and text != self._battery_text:
+                            self._battery_text = text
+                            user32.InvalidateRect(hwnd, None, True)  # 跨线程仅触发重绘，安全
+                    threading.Thread(target=query_battery, name='winctl-battery', daemon=True).start()
                 return 0
             if msg == WM_TIMER and int(wparam) == 1:  # morph 动画帧
                 m = self._morph

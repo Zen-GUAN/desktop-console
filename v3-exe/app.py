@@ -960,13 +960,18 @@ def run_selftest():
     except Exception as exc:
         check('panel-paint-smoke', False, str(exc))
 
-    # 外设电量：hidapi 可用性 + Razer 鼠标集合枚举（不要求本机一定有电池设备）
+    # 外设电量：hidapi 可用性 + Razer 鼠标集合枚举 + 键盘 BLE GATT 模块（不要求一定有电池设备）
     try:
         import razer_battery
         cols = razer_battery._mouse_collections()
         check('razer-hid', True, 'hidapi OK, 雷蛇鼠标集合=%d' % len(cols))
     except Exception as exc:
         check('razer-hid', False, str(exc))
+    try:
+        import ble_battery
+        check('ble-battery', True, 'winsdk GATT 模块 OK')
+    except Exception as exc:
+        check('ble-battery', False, str(exc))
 
     # 宿主构造签名冒烟：防止回调参数漂移（GUI 才会炸、无窗口模式测不到的类）
     try:
@@ -1193,12 +1198,23 @@ class GuiHost:
         return [(fid, BALL_FUNC_LABELS.get(fid, fid)) for fid in BALL['functions']]
 
     def _panel_battery_text(self):
-        """悬浮球面板的电量行文本（Razer 无线鼠标；杂牌接收器无上报通道则返回 None）。"""
+        """悬浮球面板的电量行文本：鼠标（Razer HID）· 键盘（BLE GATT）合并一行。"""
+        parts = []
         try:
             import razer_battery
-            return razer_battery.read_line()
+            t = razer_battery.read_line()
+            if t:
+                parts.append(t)
         except Exception:
-            return None
+            pass
+        try:
+            import ble_battery
+            t = ble_battery.read_line()
+            if t:
+                parts.append(t)
+        except Exception:
+            pass
+        return ' · '.join(parts) if parts else None
 
     def _build_ball_menu(self, parent_menu):
         """托盘右键菜单的「悬浮球」子菜单：开关 + 功能自选。"""
