@@ -24,7 +24,10 @@
 - **功能自选**：托盘右键 → 「悬浮球」子菜单勾选，或主面板「更多工具 → 悬浮球设置」页（勾选+排序可视化）。可选 9 项，默认 5 项
 - **实现要点**：纯后端（ctypes 分层窗口 + UpdateLayeredWindow），前端零改动；球线程整体 `SetThreadDpiAwarenessContext(PMv2)` 全程物理像素；拖动/缩放/面板拖动均为异步轮询（GetCursorPos + GetAsyncKeyState，绕开 WebView2 capture）；异常落 `%TEMP%\WinCtlPanel3-ball.log`
 - **关闭悬浮球**：托盘子菜单取消「启用悬浮球」即可；配置即时落盘
-- **电量行原理**：Razer 私有 HID 协议直读（`razer_battery.py`，协议逆向自 OpenRazer，本机 Viper V2 Pro 实测），不需要 Synapse 运行；有线/dongle 双端点自动切换，事务 ID 兼容 0x1F/0x3F/0xFF；鼠标睡眠或端点空响应时不显示该行。**键盘电量读不到**——杂牌 2.4G 接收器（VID 1A2C）无标准电量上报通道，属硬件限制
+- **电量行原理**：
+  - **鼠标**：Razer 私有 HID 协议直读（`razer_battery.py`，协议逆向自 OpenRazer，本机 Viper V2 Pro 实测），不需要 Synapse 运行；有线/dongle 双端点自动切换，事务 ID 兼容 0x1F/0x3F/0xFF；鼠标睡眠或端点空响应时不显示
+  - **键盘**：AULA 蓝牙 **5.2（BLE）模式**走标准 GATT 电池服务（`ble_battery.py`，本机 AULA-S98 实测）；**经典蓝牙 3.0 / 2.4G 接收器 / 有线模式固件不上报，读不到**（硬件限制）。想看键盘电量需让键盘保持蓝牙 5.2 模式
+  - 两路合并一行显示（`鼠标 xx% · 键盘 xx%`），异步后台查询（键盘 GATT 约 1 秒），面板弹出不卡顿；缺失的设备自动从行中省略
 
 ## 开机自启
 
