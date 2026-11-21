@@ -621,6 +621,7 @@ user32.GetDpiForSystem.restype = wintypes.UINT
 user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = ctypes.c_void_p(-4)
 WM_APP_REASSERT = WM_APP + 1  # 球线程内部：重新置顶/落位
+WM_APP_BATTERY = WM_APP + 2   # 电量查询线程 → 球线程：重排版并改面板高度
 
 # 面板（GDI 文本快捷菜单）所需
 LWA_ALPHA = 0x2
@@ -803,7 +804,7 @@ class BallHost:
         self._slider_y0 = 0
         self._slider_y1 = 0
         self._slider_pct = None      # None = 亮度不可用（无 DDC 显示器）
-        self._battery_text = None    # 电量行文本（异步查询后填入）
+        self._battery_lines = []     # 电量行（每设备一行，异步查询后填入）
         self._slider_drag = False
         self._morph = None           # {'phase': 'out'|'in', 'from': (x,y,w,h), 'to': (x,y,w,h), 'step': n}
         self._hover_suppress = False  # 面板缩回后光标恰在球上：等离开再允许悬停弹出（防拍抖）
@@ -1141,11 +1142,14 @@ class BallHost:
         self._panel_w = maxw + self._card_inset * 2 + int(round(56 * self.scale))
         self._slider_y0 = self._panel_pad + self._handle_h
         self._slider_y1 = self._slider_y0 + self._slider_card_h
-        # 电量行保留区（布局恒定防跳变；查询异步，文本后到）
+        # 电量区（每设备一行；先按 1 行预留，查询返回后按实际行数重排版并增高面板）
         if self.on_battery_text is not None:
+            n_lines = max(1, len(self._battery_lines))
+            self._battery_line_h = int(round(16 * self.scale))
+            self._battery_line_gap = int(round(2 * self.scale))
             self._battery_y0 = self._slider_y1 + int(round(2 * self.scale))
-            self._battery_text_y = self._battery_y0 + int(round(2 * self.scale))
-            self._rows_y0 = self._battery_y0 + int(round(18 * self.scale)) + int(round(2 * self.scale))
+            self._rows_y0 = self._battery_y0 + n_lines * (self._battery_line_h + self._battery_line_gap) \
+                + int(round(2 * self.scale))
         else:
             self._battery_y0 = self._slider_y1
             self._rows_y0 = self._slider_y1 + int(round(6 * self.scale))
@@ -1281,10 +1285,24 @@ class BallHost:
                             text = self.on_battery_text()
                         except Exception:
                             text = None
-                        if text and text != self._battery_text:
-                            self._battery_text = text
-                            user32.InvalidateRect(hwnd, None, True)  # 跨线程仅触发重绘，安全
+                        if text:
+                            self._battery_lines = text.split('\n')
+                            user32.PostMessageW(self.panel_hwnd, WM_APP_BATTERY, 0, 0)
                     threading.Thread(target=query_battery, name='winctl-battery', daemon=True).start()
+                return 0
+            if msg == WM_APP_BATTERY:  # 电量已到位：重排版并自适应面板高度
+                if self._panel_shown and self._battery_lines:
+                    r = wintypes.RECT()
+                    user32.GetWindowRect(hwnd, ctypes.byref(r))
+                    self._panel_measure()
+                    new_h = self._panel_h
+                    self._panel_pos = (r.left, r.top)
+                    rgn = gdi32.CreateRoundRectRgn(0, 0, self._panel_w + 1, new_h + 1,
+                                                   int(round(12 * self.scale)), int(round(12 * self.scale)))
+                    user32.SetWindowRgn(hwnd, rgn, True)
+                    user32.SetWindowPos(hwnd, None, r.left, r.top, self._panel_w, new_h,
+                                        SWP_NOACTIVATE | SWP_SHOWWINDOW)
+                    user32.InvalidateRect(hwnd, None, True)
                 return 0
             if msg == WM_TIMER and int(wparam) == 1:  # morph 动画帧
                 m = self._morph
@@ -1421,15 +1439,17 @@ class BallHost:
                     self._fill_round(hdc, (self._panel_w - pill_w) // 2, max(3, self._panel_pad // 2 - pill_h // 2),
                                      (self._panel_w + pill_w) // 2, max(3, self._panel_pad // 2 - pill_h // 2) + pill_h,
                                      self.PANEL_HANDLE, pill_h)
-                    # 电量行（异步查询；滑块卡片与功能行之间的保留区）
-                    if self.on_battery_text is not None and self._battery_text:
+                    # 电量行（每设备一行；异步查询后自适应）
+                    if self.on_battery_text is not None:
                         try:
-                            gdi32.SetTextColor(hdc, self.PANEL_MINT)
-                            tr_b = wintypes.RECT(card_l + int(round(12 * self.scale)), self._battery_text_y,
-                                                 card_r - int(round(12 * self.scale)),
-                                                 self._battery_text_y + int(round(16 * self.scale)))
-                            user32.DrawTextW(hdc, self._battery_text, -1, ctypes.byref(tr_b),
-                                             DT_SINGLELINE | DT_VCENTER)
+                            for bi, line in enumerate(self._battery_lines):
+                                by = self._battery_y0 + bi * (self._battery_line_h + self._battery_line_gap)
+                                gdi32.SetTextColor(hdc, self.PANEL_MINT)
+                                tr_b = wintypes.RECT(card_l + int(round(12 * self.scale)), by,
+                                                     card_r - int(round(12 * self.scale)),
+                                                     by + self._battery_line_h)
+                                user32.DrawTextW(hdc, line, -1, ctypes.byref(tr_b),
+                                                 DT_SINGLELINE | DT_VCENTER)
                         except Exception:
                             _ball_log_exc('panel-paint-battery')
                     # 亮度滑块卡片（无 DDC 时跳过）

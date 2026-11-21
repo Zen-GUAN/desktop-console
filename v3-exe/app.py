@@ -1198,7 +1198,7 @@ class GuiHost:
         return [(fid, BALL_FUNC_LABELS.get(fid, fid)) for fid in BALL['functions']]
 
     def _panel_battery_text(self):
-        """悬浮球面板的电量行文本：鼠标（Razer HID）· 键盘（BLE GATT）合并一行。"""
+        """悬浮球面板的电量文本：鼠标（Razer HID）· 键盘（BLE GATT），每设备一行。"""
         parts = []
         try:
             import razer_battery
@@ -1214,7 +1214,7 @@ class GuiHost:
                 parts.append(t)
         except Exception:
             pass
-        return ' · '.join(parts) if parts else None
+        return '\n'.join(parts) if parts else None
 
     def _build_ball_menu(self, parent_menu):
         """托盘右键菜单的「悬浮球」子菜单：开关 + 功能自选。"""
