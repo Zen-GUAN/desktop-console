@@ -4,7 +4,10 @@
 协议出处：OpenRazer / xzeldon/razer-battery-report（已在本机 Viper V2 Pro 实测验证）：
   * 90 字节帧：[0]=status [1]=tid [2:4]=remaining [4]=protocol(0x02) [5]=data_size
     [6]=class(0x07) [7]=command_id [8:88]=args [88]=xor-crc(bytes[2:88]) [89]=0
-  * 电量查询 class=0x07 id=0x80，充电查询 id=0x84；答案在 arguments[1]（raw 0-255，255=满格）
+  * 电量查询 class=0x07 id=0x80，充电查询 id=0x84；答案在 arguments[1]
+    **刻度（2026-11-22 实测修正）**：该字节是**直接百分比 0-100**，255 是「充满」哨兵——
+    本机完整充放周期实测：充电爬升 3→12→67（%）、充满读 255、满电使用一天后 31。
+    按 /255 刻度换算会在满格附近严重失真，**勿改回 /255**。
   * hidapi 线上格式 = 报告 ID(0x00) + 90 字节帧 = 91 字节，特征报告缓冲必须严格 91
   * 事务 ID：新一代机型 0x1F（Viper V2 Pro 实测），兼容候选 0x3F / 0xFF
   * 有线/dongle 是两个端点（PID 不同），插线时 dongle 空响应——按枚举结果逐端点尝试
@@ -87,9 +90,9 @@ def read_battery():
             if not args:
                 continue
             raw = args[1]
-            if raw > 255 or raw == 0:
-                continue
-            percent = raw * 100 // 255
+            if raw == 0:
+                continue  # 空回显/睡眠（255=充满哨兵是合法值）
+            percent = min(raw, 100)  # 直接百分比；255 哨兵 → 100%
             charging = None
             chg = _query_with_tid(dev, CMD_CHARGING)
             if chg:
