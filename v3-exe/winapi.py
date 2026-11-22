@@ -805,6 +805,7 @@ class BallHost:
         self._slider_y1 = 0
         self._slider_pct = None      # None = 亮度不可用（无 DDC 显示器）
         self._battery_lines = []     # 电量行（每设备一行，异步查询后填入）
+        self._battery_queried = False  # 本轮面板是否已完成过一次查询（决定预留区高度）
         self._slider_drag = False
         self._morph = None           # {'phase': 'out'|'in', 'from': (x,y,w,h), 'to': (x,y,w,h), 'step': n}
         self._hover_suppress = False  # 面板缩回后光标恰在球上：等离开再允许悬停弹出（防拍抖）
@@ -1142,9 +1143,9 @@ class BallHost:
         self._panel_w = maxw + self._card_inset * 2 + int(round(56 * self.scale))
         self._slider_y0 = self._panel_pad + self._handle_h
         self._slider_y1 = self._slider_y0 + self._slider_card_h
-        # 电量区（每设备一行；先按 1 行预留，查询返回后按实际行数重排版并增高面板）
+        # 电量区（每设备一行；查询前按 1 行预留，返回后按实际行数重排版）
         if self.on_battery_text is not None:
-            n_lines = max(1, len(self._battery_lines))
+            n_lines = len(self._battery_lines) if self._battery_queried else 1
             self._battery_line_h = int(round(16 * self.scale))
             self._battery_line_gap = int(round(2 * self.scale))
             self._battery_y0 = self._slider_y1 + int(round(2 * self.scale))
@@ -1185,6 +1186,8 @@ class BallHost:
         self._hover_row = -1
         self._slider_pct = self.on_brightness() if self.on_brightness else None
         self._battery_text = None
+        self._battery_lines = []
+        self._battery_queried = False
         self._panel_measure()
         if self.on_battery_text is not None:
             user32.SetTimer(self.panel_hwnd, 3, 350, None)  # 异步查询电量，随后填入
@@ -1237,6 +1240,7 @@ class BallHost:
     def _hide_panel(self):
         if not self.panel_hwnd or not self._panel_shown or self._morph:
             return
+        user32.KillTimer(self.panel_hwnd, 3)  # 停电量周期刷新
         r = wintypes.RECT()
         user32.GetWindowRect(self.panel_hwnd, ctypes.byref(r))
         # 面板缩回成球，动画结束后球重新出现
@@ -1277,7 +1281,7 @@ class BallHost:
 
     def _panel_dispatch(self, hwnd, msg, wparam, lparam):
         try:
-            if msg == WM_TIMER and int(wparam) == 3:  # 电量异步查询（面板弹出后一次性，后台线程）
+            if msg == WM_TIMER and int(wparam) == 3:  # 电量查询（后台线程；面板展开期间每 60s 重查）
                 user32.KillTimer(hwnd, 3)
                 if self.on_battery_text is not None and self._panel_shown:
                     def query_battery():
@@ -1285,13 +1289,15 @@ class BallHost:
                             text = self.on_battery_text()
                         except Exception:
                             text = None
-                        if text:
-                            self._battery_lines = text.split('\n')
-                            user32.PostMessageW(self.panel_hwnd, WM_APP_BATTERY, 0, 0)
+                        # 失败也更新（None → 行清空），绝不保留陈旧读数
+                        self._battery_lines = text.split('\n') if text else []
+                        self._battery_queried = True
+                        user32.PostMessageW(self.panel_hwnd, WM_APP_BATTERY, 0, 0)
                     threading.Thread(target=query_battery, name='winctl-battery', daemon=True).start()
                 return 0
             if msg == WM_APP_BATTERY:  # 电量已到位：重排版并自适应面板高度
-                if self._panel_shown and self._battery_lines:
+                if self._panel_shown and self._battery_queried:
+                    user32.SetTimer(hwnd, 3, 60000, None)  # 面板保持展开时 60s 周期刷新
                     r = wintypes.RECT()
                     user32.GetWindowRect(hwnd, ctypes.byref(r))
                     self._panel_measure()
